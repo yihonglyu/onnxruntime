@@ -158,10 +158,6 @@ GemmU8U8CopyPackBFrame ENDS
 ; is aligned up to a multiple of 2 to maintain 32-bit alignment. All padding
 ; bytes are zero filled.
 ;
-; These 16-bit values are also accumulated into an intermediate per-row
-; accumulator. CountK cannot be greater than 128 to avoid overflowing these
-; signed 16-bit accumulators.
-;
 
         sub     r9,4
         jb      ProcessRemainingRows
@@ -190,10 +186,14 @@ ProcessNextColumnLoopM4:
         vmovdqu YMMWORD PTR [rcx+r11*2],ymm5
         vmovdqu YMMWORD PTR [rax],ymm6
         vmovdqu YMMWORD PTR [rax+r11*2],ymm7
-        vpaddw  ymm0,ymm0,ymm4              ; accumulate per row along columns
-        vpaddw  ymm1,ymm1,ymm5
-        vpaddw  ymm2,ymm2,ymm6
-        vpaddw  ymm3,ymm3,ymm7
+        vpmaddwd ymm4,ymm4,ymm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; accumulate per row along columns
+        vpmaddwd ymm5,ymm5,ymm8
+        vpaddd  ymm1,ymm1,ymm5
+        vpmaddwd ymm6,ymm6,ymm8
+        vpaddd  ymm2,ymm2,ymm6
+        vpmaddwd ymm7,ymm7,ymm8
+        vpaddd  ymm3,ymm3,ymm7
         add     rdx,16                      ; advance matrix A by 16 bytes
         add     rcx,16*2                    ; advance matrix D by 16 words
         sub     rbx,16                      ; subtract columns remaining
@@ -280,21 +280,21 @@ ProcessPaddedMatrixADataM4:
         vpmaskmovd YMMWORD PTR [rcx+r11*2],ymm9,ymm5
         vpmaskmovd YMMWORD PTR [rax],ymm9,ymm6
         vpmaskmovd YMMWORD PTR [rax+r11*2],ymm9,ymm7
-        vpaddw  ymm0,ymm0,ymm4              ; accumulate per row along columns
-        vpaddw  ymm1,ymm1,ymm5
-        vpaddw  ymm2,ymm2,ymm6
-        vpaddw  ymm3,ymm3,ymm7
+        vpmaddwd ymm4,ymm4,ymm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; accumulate per row along columns
+        vpmaddwd ymm5,ymm5,ymm8
+        vpaddd  ymm1,ymm1,ymm5
+        vpmaddwd ymm6,ymm6,ymm8
+        vpaddd  ymm2,ymm2,ymm6
+        vpmaddwd ymm7,ymm7,ymm8
+        vpaddd  ymm3,ymm3,ymm7
 
 ;
 ; Reduce the sums for the four rows of output.
 ;
 
 ReduceRowSumBufferM4:
-        vpmaddwd ymm0,ymm0,ymm8             ; horizontal word+word=dword per row
-        vpmaddwd ymm1,ymm1,ymm8
         vphaddd ymm0,ymm0,ymm1              ; reduce and interleave Sum1/Sum0
-        vpmaddwd ymm2,ymm2,ymm8
-        vpmaddwd ymm3,ymm3,ymm8
         vphaddd ymm1,ymm2,ymm3              ; reduce and interleave Sum3/Sum2
         vphaddd ymm0,ymm0,ymm1              ; reduce and interleave Sum3/Sum2/Sum1/Sum0
         vextracti128 xmm1,ymm0,1            ; extract high dwords
@@ -325,7 +325,8 @@ ProcessNextRowM1:
 ProcessNextColumnLoopM1:
         vpmovzxbw ymm4,XMMWORD PTR [rdx]
         vmovdqu YMMWORD PTR [rcx],ymm4
-        vpaddw  ymm0,ymm0,ymm4              ; accumulate per row along columns
+        vpmaddwd ymm4,ymm4,ymm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; accumulate per row along columns
         add     rdx,16                      ; advance matrix A by 16 bytes
         add     rcx,16*2                    ; advance matrix D by 16 words
         sub     rbx,16                      ; subtract columns remaining
@@ -377,14 +378,14 @@ CopyRemainingCountKLessThan2M1:
 ProcessPaddedMatrixADataM1:
         vpmovzxbw ymm4,XMMWORD PTR GemmU8U8CopyPackAFrame.PaddedMatrixAData[rsp]
         vpmaskmovd YMMWORD PTR [rcx],ymm9,ymm4
-        vpaddw  ymm0,ymm0,ymm4              ; accumulate per row along columns
+        vpmaddwd ymm4,ymm4,ymm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; accumulate per row along columns
 
 ;
 ; Reduce the sum for the single row of output.
 ;
 
 ReduceRowSumBufferM1:
-        vpmaddwd ymm0,ymm0,ymm8             ; horizontal word+word=dword per row
         vextracti128 xmm1,ymm0,1            ; extract high dwords
         vpaddd  xmm0,xmm0,xmm1              ; reduction
         vphaddd xmm0,xmm0,xmm0

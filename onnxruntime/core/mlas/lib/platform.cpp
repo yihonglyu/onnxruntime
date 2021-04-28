@@ -153,6 +153,8 @@ Return Value:
     this->QLinearAddU8Kernel = MlasQLinearAddU8Kernel;
     this->QuantizeLinearS8Kernel = MlasQuantizeLinearS8Kernel;
     this->QuantizeLinearU8Kernel = MlasQuantizeLinearU8Kernel;
+    this->QuantizeLinearPackAKernel = MlasQuantizeLinearPackAKernel;
+    this->QuantizeLinearPackAExtKernel = MlasQuantizeLinearPackAExtKernel;
     this->ConvDepthwiseU8S8Kernel = MlasConvDepthwiseKernel<int8_t>;
     this->ConvDepthwiseU8U8Kernel = MlasConvDepthwiseKernel<uint8_t>;
 
@@ -303,6 +305,8 @@ Return Value:
 #if !defined(MLAS_AVX512F_INTRINSICS_UNSUPPORTED)
                     this->QuantizeLinearS8Kernel = MlasQuantizeLinearS8KernelAvx512F;
                     this->QuantizeLinearU8Kernel = MlasQuantizeLinearU8KernelAvx512F;
+                    this->QuantizeLinearPackAKernel = MlasQuantizeLinearPackAKernelAvx512F;
+                    this->QuantizeLinearPackAExtKernel = MlasQuantizeLinearPackAExtKernelAvx512F;
 #endif
 
                     //

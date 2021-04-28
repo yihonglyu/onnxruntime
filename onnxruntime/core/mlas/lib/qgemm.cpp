@@ -34,22 +34,85 @@ void
 
 typedef
 void
-(MLAS_GEMM_U8X8_COPY_PACKB_ROUTINE)(
-    uint8_t* D,
+(MLAS_GEMM_U8X8_COPY_PACKB_THD_ROUTINE)(
+    size_t N,
+    size_t K,
+    size_t RangeStartN,
+    size_t RangeCountN,
     const uint8_t* B,
     size_t ldb,
-    size_t CountN,
-    size_t CountK,
-    int32_t* ColumnSumBuffer,
-    bool BIsSigned
+    bool BIsSigned,
+    void* PackedBBuf
+    );
+
+typedef
+void
+(MLAS_GEMM_U8X8_QUANT_PACKB_THD_ROUTINE)(
+    size_t N,
+    size_t K,
+    size_t RangeStartN,
+    size_t RangeCountN,
+    const float* B,
+    size_t ldb,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedBBuf
+    );
+
+
+typedef
+size_t
+(MLAS_GEMM_U8X8_PACKA_SIZE_ROUTINE)(
+    size_t M,
+    size_t K
+    );
+
+/**
+ * @brief Function for copy-pack-A threaded job
+*/
+typedef
+void
+(MLAS_GEMM_U8X8_COPY_PACKA_THD_ROUTINE)(
+    size_t M,
+    size_t K,
+    size_t RangeStartM,
+    size_t RangeCountM,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedABuf
+    );
+
+/**
+ * @brief Function for quantize-pack-A threaded job
+*/
+typedef
+void
+(MLAS_GEMM_U8X8_QUANT_PACKA_THD_ROUTINE)(
+    size_t M,
+    size_t K,
+    size_t RangeStartM,
+    size_t RangeCountM,
+    const float* A,
+    size_t lda,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedABuf
     );
 
 struct MLAS_GEMM_U8X8_DISPATCH {
     MLAS_GEMM_U8X8_OPERATION* Operation;
     MLAS_GEMM_U8X8_OPERATION* PackedOperation;
-    MLAS_GEMM_U8X8_COPY_PACKB_ROUTINE* CopyPackBRoutine;
+    MLAS_GEMM_U8X8_OPERATION* AllPackedOperation;
     size_t PackedK;
     size_t PackedStrideK;
+
+    MLAS_GEMM_U8X8_PACKA_SIZE_ROUTINE* PackASizeRoutine;
+    MLAS_GEMM_U8X8_COPY_PACKA_THD_ROUTINE* CopyPackAThdRoutine;
+    MLAS_GEMM_U8X8_QUANT_PACKA_THD_ROUTINE* QuantPackAThdRoutine;
+
+    MLAS_GEMM_U8X8_COPY_PACKB_THD_ROUTINE* CopyPackBThdRoutine;
+    MLAS_GEMM_U8X8_QUANT_PACKB_THD_ROUTINE* QuantPackBThdRoutine;
 };
 
 const MLAS_GEMM_U8X8_DISPATCH*
@@ -79,6 +142,100 @@ MlasGemmU8X8GetDispatch(
 
     return GemmU8X8Dispatch;
 }
+
+template<typename OutputType>
+MLAS_FORCEINLINE
+void
+MlasGemmU8X8QuantizePackA(
+    OutputType* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    );
+
+/**
+ * Router wrapper for MlasGemmU8X8QuantizePackA, the quantization-pack kernel
+ * 
+ * Can't use MlasGemmU8X8QuantizePackA directly, as we need to rely on MlasPlatform
+ * to dynamically route to AVX512 impl for some CPUs
+ */
+template<typename OutputType>
+MLAS_FORCEINLINE
+void
+MlasGemmU8X8QuantizePackARouter(
+    OutputType* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    );
+
+#if defined(MLAS_TARGET_AMD64)
+
+template<>
+MLAS_FORCEINLINE
+void
+MlasGemmU8X8QuantizePackARouter(
+    uint8_t* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    MlasPlatform.QuantizeLinearPackAKernel(D, A, lda, CountM, CountK, RowSumBuffer, Scale,
+                                           ZeroPoint);
+}
+
+template<>
+MLAS_FORCEINLINE
+void
+MlasGemmU8X8QuantizePackARouter(
+    int16_t* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    MlasPlatform.QuantizeLinearPackAExtKernel(D, A, lda, CountM, CountK, RowSumBuffer, Scale,
+                                           ZeroPoint);
+}
+
+#elif defined(MLAS_SSE2_INTRINSICS)
+template<typename OutputType>
+MLAS_FORCEINLINE
+void
+MlasGemmU8X8QuantizePackARouter(
+    OutputType* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    MlasGemmU8X8QuantizePackA<OutputType>(D, A, lda, CountM, CountK, RowSumBuffer, Scale,
+                                          ZeroPoint);
+}
+
+// TODO!! other architecture
+#endif
 
 //
 // Define the parameters to execute segments of a QGEMM operation on worker
@@ -215,6 +372,21 @@ MlasGemmU8X8CopyPackB(
     int32_t* ColumnSumBuffer,
     bool BIsSigned
     );
+
+template<typename KernelType>
+void
+MlasGemmU8X8QuantizePackB(
+    typename KernelType::PackedBType* D,
+    const float* B,
+    size_t ldb,
+    size_t CountN,
+    size_t CountK,
+    int32_t* ColumnSumBuffer,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint
+    );
+
 
 template<typename KernelType>
 size_t
@@ -614,7 +786,9 @@ Return Value:
                 // The ZeroPointB term is factored out and either applied below for per-matrix
                 // quantization or inside the kernel for per-column quantization.
                 //
-
+                // SUM(A[i] * B[i] - B[i] * ZeroPointA - (A[i] - ZeroPointA) * ZeroPointB)
+                // SUM(A[i] * B[i]) - SUM(B[i]) * ZeroPointA - (SUM(A[i]) - CountK * ZeroPointA) * ZeroPointB
+ 
                 for (size_t mm = 0; mm < CountM; mm++) {
                     RowSumBuffer[mm] -= int32_t(CountK) * ZeroPointA;
                 }
@@ -675,6 +849,599 @@ Return Value:
         PackedB = (const uint8_t*)PackedB + AlignedN * CountK;
     }
 }
+
+
+template <typename KernelType>
+void
+MlasGemmU8X8AllPackedOperation(
+    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
+    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
+    const size_t RangeStartM,
+    const size_t RangeCountM,
+    const size_t RangeStartN,
+    const size_t RangeCountN
+    )
+{
+    constexpr MLAS_GEMM_U8X8_STRIDES Strides = KernelType::PackedStrides;
+
+    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[Strides.M], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[Strides.N], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[Strides.N], 64);
+
+    const size_t K = Shape->K;
+
+    const size_t lda = Data->lda;
+    const size_t ldc = Data->ldc;
+
+    const KernelType::PackedAType* PackedA =
+        (const KernelType::PackedAType*)(Data->A);
+    const uint8_t* PackedB = (const uint8_t*)Data->B;
+    int32_t* C = Data->C + RangeStartM * ldc + RangeStartN;
+    const uint8_t* PackedZeroPointB = Data->PerColumnZeroPoints ?
+        Data->ZeroPointB + RangeStartN : nullptr;
+
+    int32_t ZeroPointA = Data->ZeroPointA;
+    int32_t ZeroPointB = typename KernelType::OffsetBType(*Data->ZeroPointB);
+
+    //
+    // Fixup the sign bit of the per-matrix zero point offset of matrix B if the
+    // data is the opposite format of the kernel implementation. This value is
+    // ignored if per-column zero point offsets are used instead.
+    //
+
+    ZeroPointB =
+        MlasGemmU8X8FixupZeroPointB<KernelType>(ZeroPointB, Shape->BIsSigned);
+
+    //
+    // Extract the pointer to the row/column sum buffer from the packed matrix.
+    //
+
+    const size_t AlignedN =
+        (Shape->N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    const int32_t* PackedColumnSumBuffer = (const int32_t*)PackedB;
+    PackedB = (const uint8_t*)(PackedColumnSumBuffer + AlignedN);
+    PackedColumnSumBuffer += RangeStartN;
+
+    const size_t AlignedM =
+        (Shape->M + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    const int32_t* PackedRowSumBuffer = (const int32_t*)PackedA;
+    PackedA =
+        (const KernelType::PackedAType*)(PackedRowSumBuffer + AlignedM);
+    PackedRowSumBuffer += RangeStartM;
+
+
+    //
+    // Step through each slice of matrix B along the K dimension.
+    //
+
+    size_t CountK;
+
+    for (size_t k = 0; k < K; k += CountK) {
+
+        CountK = std::min(K - k, Strides.K);
+
+        const size_t PackedCountK = (CountK + KernelType::PackedK - 1) /
+                                    KernelType::PackedK;
+
+        if (k > 0) {
+            std::fill_n(ColumnSumBuffer, Strides.N, 0);
+            std::fill_n(RowSumBuffer, Strides.M, 0);
+        }
+
+        //
+        // Step through each slice of matrix B along the N dimension.
+        //
+
+        size_t CountN;
+
+        for (size_t n = 0; n < RangeCountN; n += CountN) {
+
+            CountN = std::min(RangeCountN - n, Strides.N);
+
+            if (k == 0) {
+                MlasGemmU8X8ScaleSumBuffer(ColumnSumBuffer, PackedColumnSumBuffer + n,
+                    CountN, -ZeroPointA);
+            }
+
+            //
+            // Fixup the sign bit of the per-column zero point offsets of matrix B
+            // if the data is the opposite format of the kernel implementation.
+            //
+
+            if (PackedZeroPointB != nullptr) {
+                MlasGemmU8X8FixupZeroPointB<KernelType>(
+                    PackedZeroPointB + n,
+                    ZeroPointBBuffer,
+                    CountN,
+                    Shape->BIsSigned);
+            }
+
+            //
+            // Step through each slice of matrix A along the M dimension.
+            //
+
+            const uint8_t* b = PackedB + (RangeStartN + n) * KernelType::PackedK * PackedCountK;
+            int32_t* c = C + n;
+            size_t CountM;
+
+            for (size_t m = 0; m < RangeCountM; m += CountM) {
+
+                CountM = std::min(RangeCountM - m, Strides.M);
+
+                const KernelType::PackedAType* pa =
+                    PackedA +
+                    (RangeStartM + m) * KernelType::PackedK * PackedCountK;
+
+                if (k == 0) {
+                    //
+                    // Apply the global depth value constant without the ZeroPointB scaling from:
+                    //
+                    //     (A[i] - ZeroPointA) * (B[i] - ZeroPointB)
+                    //              ==>
+                    //     A[i] * B[i] - A[i] * ZeroPointB - B[i] * ZeroPointA + ZeroPointA *
+                    //     ZeroPointB
+                    //
+                    // The ZeroPointB term is factored out and either applied below for per-matrix
+                    // quantization or inside the kernel for per-column quantization.
+                    //
+                    // SUM(A[i] * B[i] - B[i] * ZeroPointA - (A[i] - ZeroPointA) * ZeroPointB)
+                    // SUM(A[i] * B[i]) - SUM(B[i]) * ZeroPointA - (SUM(A[i]) - K * ZeroPointA)
+                    // * ZeroPointB
+
+                    for (size_t mm = 0; mm < CountM; mm++) {
+                        RowSumBuffer[mm] = PackedRowSumBuffer[m+mm] - int32_t(K) * ZeroPointA;
+                    }
+
+                    //
+                    // Scale the row sums by the per-matrix zero point offset of matrix B.
+                    //
+
+                    if (PackedZeroPointB == nullptr) {
+                        MlasGemmU8X8ScaleSumBuffer(RowSumBuffer, CountM, -ZeroPointB);
+                    }
+                }
+                //
+                // Step through the rows of the local packed buffer.
+                //
+
+                int32_t* RowSums = RowSumBuffer;
+                size_t RowsRemaining = CountM;
+
+                bool ZeroMode = (k == 0);
+                bool PostProcess = (k + CountK == K);
+
+                while (RowsRemaining > 0) {
+
+                    size_t RowsHandled = MlasGemmU8X8Kernel<KernelType>(
+                        pa,
+                        b,
+                        c,
+                        PackedCountK,
+                        RowsRemaining,
+                        CountN,
+                        ldc,
+                        RowSums,
+                        ColumnSumBuffer,
+                        (PackedZeroPointB != nullptr) ? ZeroPointBBuffer : nullptr,
+                        ZeroMode);
+
+                    if (PostProcess && Data->OutputProcessor != nullptr) {
+                        Data->OutputProcessor->Process(
+                            Data->C,
+                            RangeStartM + m + CountM - RowsRemaining,
+                            RangeStartN + n,
+                            RowsHandled,
+                            CountN,
+                            Data->ldc);
+                    }
+
+                    c += ldc * RowsHandled;
+                    pa += KernelType::PackedK * PackedCountK * RowsHandled;
+                    RowSums += RowsHandled;
+                    RowsRemaining -= RowsHandled;
+                }
+            }
+        }
+
+        PackedA += Shape->M * KernelType::PackedK * PackedCountK;
+        PackedB = (const uint8_t*)PackedB + AlignedN * CountK;
+    }
+}
+
+
+/**
+ * @brief Compute the size of the packed A buffer needed
+ * 
+ * @tparam KernelType 
+ * @param M   Number of rows in A
+ * @param K   Number of columns in A
+ * @return    The packed A buffer size in bytes
+*/
+template <typename KernelType>
+size_t
+MlasGemmPackASizeT(size_t M, size_t K)
+{
+    using PackedT = typename KernelType::PackedAType;
+
+    //
+    // compute the row sum space needed
+    PackedT* BufStartPtr = reinterpret_cast<PackedT*>(0);
+    int32_t* RowSums;
+    PackedT* PackedPtr;
+    MlasGetSumValBufFromPackedMutable<PackedT>(BufStartPtr, M, RowSums, PackedPtr);
+    size_t RowSumSize = reinterpret_cast<size_t>(PackedPtr)
+        - reinterpret_cast<size_t>(BufStartPtr);
+
+    //
+    // compute the packed matrix size
+    constexpr size_t PK = typename KernelType::PackedK;
+    const size_t AlignedK = (K + PK - 1) & ~(PK - 1);
+    size_t PackedDataSize = M * AlignedK * sizeof(PackedT);
+
+    const size_t BytesRequired = RowSumSize + PackedDataSize;
+    const size_t BufferAlignment = MlasGetPreferredBufferAlignment();
+    const size_t AlignedBytesRequired =
+        (BytesRequired + BufferAlignment - 1) & ~(BufferAlignment - 1);
+    return AlignedBytesRequired;
+}
+
+/**
+ * @brief A single threaded job for pre-packing A
+ * 
+ * TODO!! this code is exactly the same with MlasGemmU8X8QuantizePackAThreaded
+ * except for the call site of pack kernel! Is there a way to merge these two?
+ * 
+ * @tparam KernelType 
+ * 
+ * @param M               Number of rows in A
+ * @param K               Number of columns in A
+ * @param RangeStartM     Starting row of this job
+ * @param RangeCountM     Number of rows to process for this job
+ * @param A               Source buffer
+ * @param lda             leading dimension of A
+ * @param PackedABuf      Destination buffer
+*/
+template<typename KernelType>
+void
+MlasGemmU8X8CopyPackAThreaded(
+    size_t M,
+    size_t K,
+    size_t RangeStartM,
+    size_t RangeCountM,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedABuf
+    )
+{
+    //
+    // Locate the row sums and packed values position
+    //
+    int32_t* PackedRowSumBuffer = nullptr;
+    typename KernelType::PackedAType* PackedA = nullptr;
+    MlasGetSumValBufFromPackedMutable(PackedABuf, M, PackedRowSumBuffer, PackedA);
+
+    PackedRowSumBuffer += RangeStartM;
+    std::fill_n(PackedRowSumBuffer, RangeCountM, 0);
+
+    A += RangeStartM * lda;
+
+    //
+    // Step through each slice of matrix A along the K dimension.
+    //
+
+    size_t CountK;
+
+    for (size_t k = 0; k < K; k += CountK) {
+
+        CountK = std::min(K - k, KernelType::PackedStrides.K);
+
+        //
+        // Step through each block of matrix A along the M dimension.
+        //
+
+        const size_t AlignedK = (CountK + KernelType::PackedK - 1) &
+                                ~(KernelType::PackedK - 1);
+        size_t StrideM;
+
+        for (size_t m = 0; m < RangeCountM; m += StrideM) {
+            KernelType::PackedAType* pa = PackedA + (RangeStartM + m) * AlignedK;
+
+            constexpr size_t BatchedN = 128;
+            MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[BatchedN], 64);
+
+            StrideM = std::min(RangeCountM - m, BatchedN);
+
+            MlasGemmU8X8CopyPackA<KernelType>(
+                pa, A + m * lda, lda, StrideM, CountK, RowSumBuffer);
+
+            //
+            // Accumulate this batch of the column sum buffer into the packed
+            // buffer accumulators.
+            //
+
+            for (size_t mm = 0; mm < StrideM; mm++) {
+                PackedRowSumBuffer[m + mm] += RowSumBuffer[mm];
+            }
+        }
+
+        A += CountK;
+        PackedA += M * AlignedK;
+    }
+}
+
+/**
+ * @brief A single threaded job for quantize and pack A
+ *
+ * TODO!! this code is exactly the same with MlasGemmU8X8CopyPackAThreaded
+ * except for the call site of quantize and pack kernel! Is there a way to
+ * merge these two?
+ *
+ * @tparam KernelType
+ *
+ * @param M               Number of rows in A
+ * @param K               Number of columns in A
+ * @param RangeStartM     Starting row of this job
+ * @param RangeCountM     Number of rows to process for this job
+ * @param A               Source buffer
+ * @param lda             leading dimension of A
+ * @param Scale           Quantization scale parameter
+ * @param ZeroPoint
+ * @param PackedABuf      Destination buffer
+ */
+template <typename KernelType>
+void
+MlasGemmU8X8QuantizePackAThreaded(
+    size_t M,
+    size_t K,
+    size_t RangeStartM,
+    size_t RangeCountM,
+    const float* A,
+    size_t lda,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedABuf
+    )
+{
+    //
+    // Locate the row sums and packed values position
+    //
+    int32_t* PackedRowSumBuffer = nullptr;
+    typename KernelType::PackedAType* PackedA = nullptr;
+    MlasGetSumValBufFromPackedMutable(PackedABuf, M, PackedRowSumBuffer, PackedA);
+
+    PackedRowSumBuffer += RangeStartM;
+    std::fill_n(PackedRowSumBuffer, RangeCountM, 0);
+
+    A += RangeStartM * lda;
+
+    //
+    // Step through each slice of matrix A along the K dimension.
+    //
+
+    size_t CountK;
+
+    for (size_t k = 0; k < K; k += CountK) {
+        CountK = std::min(K - k, KernelType::PackedStrides.K);
+
+        //
+        // Step through each block of matrix A along the M dimension.
+        //
+
+        const size_t AlignedK = (CountK + KernelType::PackedK - 1) & ~(KernelType::PackedK - 1);
+        size_t StrideM;
+
+        for (size_t m = 0; m < RangeCountM; m += StrideM) {
+            KernelType::PackedAType* pa = PackedA + (RangeStartM + m) * AlignedK;
+
+            constexpr size_t BatchedN = 128;
+            MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[BatchedN], 64);
+
+            StrideM = std::min(RangeCountM - m, BatchedN);
+
+            MlasGemmU8X8QuantizePackARouter<KernelType::PackedAType>(pa, A + m * lda, lda, StrideM,
+                CountK, RowSumBuffer, Scale, ZeroPoint);
+
+            //
+            // Accumulate this batch of the column sum buffer into the packed
+            // buffer accumulators.
+            //
+
+            for (size_t mm = 0; mm < StrideM; mm++) {
+                PackedRowSumBuffer[m + mm] += RowSumBuffer[mm];
+            }
+        }
+
+        A += CountK;
+        PackedA += M * AlignedK;
+    }
+}
+
+/**
+ * @brief A single threaded job for pre-packing B
+ * @tparam KernelType 
+ * @param N            Supplies the number of columns of matrix B.
+ * @param K            Supplies the the number of rows of matrix B.
+ * @param RangeStartN  Starting column of this job
+ * @param RangeCountN  Number of columns for this job
+ * @param B            Supplies the address of matrix B.
+ * @param ldb          Supplies the first dimension of matrix B.
+ * @param BIsSigned    Supplies true if matrix B is signed data, else
+                       false if matrix B is unsigned data.
+ * @param PackedBBuf   Supplies the address of packed matrix B.
+*/
+template<typename KernelType>
+void
+MlasGemmU8X8CopyPackBThreaded(
+    size_t N,
+    size_t K,
+    size_t RangeStartN,
+    size_t RangeCountN,
+    const uint8_t* B,
+    size_t ldb,
+    bool BIsSigned,
+    void* PackedBBuf
+    )
+{
+    //
+    // Retrieve the packing parameters.
+    //
+    constexpr size_t PackedK = KernelType::PackedK;
+    constexpr size_t PackedStrideK = KernelType::PackedStrides.K;
+
+    //
+    // Reserve and initialize storage for the column sum buffer to hold the sums
+    // of the elements along each of the columns.
+    //
+
+    const size_t AlignedN =
+        (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+
+    int32_t* PackedColumnSumBuffer = (int32_t*)PackedBBuf;
+    auto PackedB = reinterpret_cast<KernelType::PackedBType*>(PackedColumnSumBuffer + AlignedN);
+
+    PackedColumnSumBuffer += RangeStartN;
+    std::fill_n(PackedColumnSumBuffer, RangeCountN, 0);
+
+    B += RangeStartN;
+
+    //
+    // Step through each slice of matrix B along the K dimension.
+    //
+
+    size_t CountK;
+
+    for (size_t k = 0; k < K; k += CountK) {
+        CountK = std::min(K - k, PackedStrideK);
+
+        //
+        // Step through each slice of matrix B along the N dimension.
+        //
+
+        const size_t AlignedK = (CountK + PackedK - 1) & ~(PackedK - 1);
+        size_t CountN;
+
+        for (size_t n = 0; n < RangeCountN; n += CountN) {
+            KernelType::PackedBType* pb = PackedB + (RangeStartN + n) * AlignedK;
+            constexpr size_t BatchedN = 128;
+            MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[BatchedN], 64);
+
+            CountN = std::min(RangeCountN - n, BatchedN);
+
+            MlasGemmU8X8CopyPackB<KernelType>(pb, B + n, ldb, CountN, CountK, ColumnSumBuffer,
+                                               BIsSigned);
+
+            //
+            // Accumulate this batch of the column sum buffer into the packed
+            // buffer accumulators.
+            //
+
+            for (size_t nn = 0; nn < CountN; nn++) {
+                PackedColumnSumBuffer[n + nn] += ColumnSumBuffer[nn];
+            }
+        }
+
+        PackedB = (uint8_t*)PackedB + AlignedN * AlignedK;
+        B += ldb * CountK;
+    }
+}
+
+/**
+ * @brief A single threaded job for quantize and pre-packing B
+ * 
+ * TODO!! this code is exactly the same with MlasGemmU8X8CopyPackBThreaded
+ * except for the call site of quantize and pack kernel! Is there a way to
+ * merge these two?
+ * 
+ * @tparam KernelType
+ * @param N            Supplies the number of columns of matrix B.
+ * @param K            Supplies the the number of rows of matrix B.
+ * @param RangeStartN  Starting column of this job
+ * @param RangeCountN  Number of columns for this job
+ * @param B            Supplies the address of matrix B.
+ * @param ldb          Supplies the first dimension of matrix B.
+ * @param BIsSigned    Supplies true if matrix B is signed data, else
+                       false if matrix B is unsigned data.
+ * @param Scale        Quantization scale parameter
+ * @param ZeroPoint    Quantization offset
+ * @param PackedBBuf   Supplies the address of packed matrix B.
+*/
+template <typename KernelType>
+void
+MlasGemmU8X8QuantPackBThreaded(
+    size_t N,
+    size_t K,
+    size_t RangeStartN,
+    size_t RangeCountN,
+    const float* B,
+    size_t ldb,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedBBuf
+    )
+{
+    //
+    // Retrieve the packing parameters.
+    //
+    constexpr size_t PackedK = KernelType::PackedK;
+    constexpr size_t PackedStrideK = KernelType::PackedStrides.K;
+
+    // Locate data positons in the buffer
+    int32_t* PackedColumnSumBuffer;
+    typename KernelType::PackedBType* PackedB;
+    MlasGetSumValBufFromPackedMutable<typename KernelType::PackedBType>(
+        PackedBBuf, N, PackedColumnSumBuffer, PackedB);
+
+
+    const size_t AlignedN =
+        (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+
+    PackedColumnSumBuffer += RangeStartN;
+    std::fill_n(PackedColumnSumBuffer, RangeCountN, 0);
+
+    B += RangeStartN;
+
+    //
+    // Step through each slice of matrix B along the K dimension.
+    //
+
+    size_t CountK;
+
+    for (size_t k = 0; k < K; k += CountK) {
+        CountK = std::min(K - k, PackedStrideK);
+
+        //
+        // Step through each slice of matrix B along the N dimension.
+        //
+
+        const size_t AlignedK = (CountK + PackedK - 1) & ~(PackedK - 1);
+        size_t CountN;
+
+        for (size_t n = 0; n < RangeCountN; n += CountN) {
+            KernelType::PackedBType* pb = PackedB + (RangeStartN + n) * AlignedK;
+            constexpr size_t BatchedN = 128;
+            MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[BatchedN], 64);
+
+            CountN = std::min(RangeCountN - n, BatchedN);
+
+            MlasGemmU8X8QuantizePackB<KernelType>(pb, B + n, ldb, CountN, CountK, ColumnSumBuffer,
+                                              BIsSigned, Scale, ZeroPoint);
+
+            //
+            // Accumulate this batch of the column sum buffer into the packed
+            // buffer accumulators.
+            //
+
+            for (size_t nn = 0; nn < CountN; nn++) {
+                PackedColumnSumBuffer[n + nn] += ColumnSumBuffer[nn];
+            }
+        }
+
+        PackedB = (uint8_t*)PackedB + AlignedN * AlignedK;
+        B += ldb * CountK;
+    }
+}
+
 
 #if defined(MLAS_SSE2_INTRINSICS)
 
@@ -739,17 +1506,14 @@ MlasGemmU8X8CopyPackA<MLAS_GEMM_U8X8_KERNEL_SSE>(
         // but CountK is aligned up to a multiple of 2 to maintain 32-bit
         // alignment. All extra bytes are zero-padded.
         //
-        // These 16-bit values are also accumulated into an intermediate per-row
-        // accumulator. CountK cannot be greater than 128 to avoid overflowing
-        // these signed 16-bit accumulators.
-        //
 
         while (k >= 8) {
 
             __m128i Bytes = _mm_loadl_epi64((const __m128i*)&a[0]);
             __m128i Words = _mm_unpacklo_epi8(Bytes, ZeroVector);
 
-            ReductionVector = _mm_add_epi16(ReductionVector, Words);
+            ReductionVector =
+                _mm_add_epi32(ReductionVector, _mm_madd_epi16(Words, OnesWordBroadcast));
 
             _mm_storeu_si128((__m128i*)&D[0], Words);
 
@@ -776,7 +1540,8 @@ MlasGemmU8X8CopyPackA<MLAS_GEMM_U8X8_KERNEL_SSE>(
             __m128i Bytes = _mm_loadl_epi64((__m128i*)PaddedMatrixAData);
             __m128i Words = _mm_unpacklo_epi8(Bytes, ZeroVector);
 
-            ReductionVector = _mm_add_epi16(ReductionVector, Words);
+            ReductionVector =
+                _mm_add_epi32(ReductionVector, _mm_madd_epi16(Words, OnesWordBroadcast));
 
             //
             // Copy pairs of 16-bit values from the vector to the packed
@@ -794,7 +1559,6 @@ MlasGemmU8X8CopyPackA<MLAS_GEMM_U8X8_KERNEL_SSE>(
         // Reduce the partial accumulators.
         //
 
-        ReductionVector = _mm_madd_epi16(ReductionVector, OnesWordBroadcast);
         ReductionVector = _mm_add_epi32(ReductionVector,
             _mm_shuffle_epi32(ReductionVector, _MM_SHUFFLE(3, 2, 3, 2)));
         ReductionVector = _mm_add_epi32(ReductionVector,
@@ -806,6 +1570,202 @@ MlasGemmU8X8CopyPackA<MLAS_GEMM_U8X8_KERNEL_SSE>(
         CountM -= 1;
     }
 }
+
+
+template<typename OutputType>
+MLAS_FORCEINLINE
+void
+StorePackAResult(
+    OutputType* Output,
+    MLAS_INT32X4 IntegerVector
+    );
+
+template <>
+MLAS_FORCEINLINE void
+StorePackAResult<uint8_t>(
+    uint8_t* Output,
+    MLAS_INT32X4 IntegerVector
+    )
+{
+    IntegerVector = _mm_packus_epi16(IntegerVector, IntegerVector);
+    IntegerVector = _mm_packus_epi16(IntegerVector, IntegerVector);
+    *((int32_t*)Output) = _mm_cvtsi128_si32(IntegerVector);
+}
+
+template <>
+MLAS_FORCEINLINE void
+StorePackAResult<int16_t>(
+    int16_t* Output,
+    MLAS_INT32X4 IntegerVector
+    )
+{
+    IntegerVector = _mm_packus_epi16(IntegerVector, IntegerVector);
+    *((int64_t*)Output) = _mm_cvtsi128_si64(IntegerVector);
+}
+
+MLAS_FORCEINLINE
+MLAS_INT32X4
+MlasQuantizeLinearVectorSSE(
+    MLAS_FLOAT32X4 FloatVector,
+    MLAS_FLOAT32X4 ScaleVector,
+    MLAS_FLOAT32X4 MinimumValueVector,
+    MLAS_FLOAT32X4 MaximumValueVector,
+    MLAS_INT32X4 ZeroPointVector
+    )
+{
+    //
+    // Scale the input vector and clamp the values to the minimum and maximum
+    // range (adjusted by the zero point value).
+    //
+
+    FloatVector = MlasDivideFloat32x4(FloatVector, ScaleVector);
+
+    // N.B. MINPS and MAXPS returns the value from the second vector if the
+    // value from the first vector is a NaN.
+    FloatVector = _mm_max_ps(FloatVector, MinimumValueVector);
+    FloatVector = _mm_min_ps(FloatVector, MaximumValueVector);
+
+    //
+    // Convert the float values to integer using "round to nearest even" and
+    // then shift the output range using the zero point value.
+    //
+    // N.B. Assumes MXCSR has been configured with the default rounding mode of
+    // "round to nearest even".
+    auto IntegerVector = _mm_cvtps_epi32(FloatVector);
+    IntegerVector = _mm_add_epi32(IntegerVector, ZeroPointVector);
+
+    return IntegerVector;
+}
+
+/**
+ * @brief Quantize and prepack a block of A, SSE implementation
+ *
+ * Type parameter OutputType can be either uint8_t or int16_t, because
+ * some AVX QGEMM kernels need to extend A to 16b and others keep 8b.
+ * Since quantized A is always uint8_t, extension to 16b is simple
+ * zero extension
+ *
+ * @param D         Destination buffer for quantized and packed values
+ * @param A         Buffer for floating matrix A
+ * @param lda       leading dimension for A
+ * @param CountM    Number of rows to process
+ * @param CountK    Number of columns to process
+ * @param RowSumBuffer
+ * @param Scale     Quantization scale
+ * @param ZeroPoint Quantization zero point value
+ */
+template <typename OutputType>
+MLAS_FORCEINLINE
+void
+MlasGemmU8X8QuantizePackA(
+    OutputType* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    // For SSE and AVX kernels, pack A does not do much other than align each row
+    // to 32 bits boundary and pad with 0
+    constexpr size_t kbound = 4 / sizeof(OutputType);
+    const size_t AlignedK = (CountK + kbound - 1) & ~(kbound - 1);
+
+    // constants for the entire matrix
+    constexpr int32_t MinimumValue = std::numeric_limits<uint8_t>::min();
+    constexpr int32_t MaximumValue = std::numeric_limits<uint8_t>::max();
+
+    auto ScaleVector = MlasBroadcastFloat32x4(Scale);
+    auto MinimumValueVector = MlasBroadcastFloat32x4(float(MinimumValue - ZeroPoint));
+    auto MaximumValueVector = MlasBroadcastFloat32x4(float(MaximumValue - ZeroPoint));
+    auto ZeroPointVector = MlasBroadcastInt32x4(ZeroPoint);
+
+    while (CountM > 0) {
+        //
+        // In a single row
+        //
+        const float* a = A;
+        size_t k = CountK;
+        auto AccVector = _mm_setzero_si128();
+
+        while (k >= 4) {
+            auto FloatVector = MlasLoadFloat32x4(a);
+            auto IntegerVector = MlasQuantizeLinearVectorSSE(
+                FloatVector, ScaleVector, MinimumValueVector, MaximumValueVector, ZeroPointVector);
+
+            AccVector = _mm_add_epi32(IntegerVector, AccVector);
+            StorePackAResult<OutputType>(D, IntegerVector);
+
+            a += 4;
+            D += 4;
+            k -= 4;
+        }
+
+        // Reduce row sum vector to single 32b int
+        AccVector = _mm_hadd_epi32(AccVector, AccVector);
+        AccVector = _mm_hadd_epi32(AccVector, AccVector);
+
+        while (k > 0) {
+            auto FloatVector = _mm_load_ss(a);
+
+            auto IntegerVector = MlasQuantizeLinearVectorSSE(
+                FloatVector, ScaleVector, MinimumValueVector, MaximumValueVector, ZeroPointVector);
+
+            AccVector = _mm_add_epi32(IntegerVector, AccVector);
+            D[0] = (OutputType)_mm_cvtsi128_si32(IntegerVector);
+            D++;
+            a++;
+            k--;
+        }
+        // align up and pad
+        std::fill_n(D, AlignedK - CountK, static_cast<OutputType>(0));
+        D += (AlignedK - CountK);
+
+        *RowSumBuffer++ = _mm_cvtsi128_si32(AccVector);
+
+        A += lda;
+        CountM -= 1;
+    }
+}
+
+/**
+ * @brief quantize and pack A to uint8_t
+ */
+void MLASCALL
+MlasQuantizeLinearPackAKernel(
+    uint8_t* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    MlasGemmU8X8QuantizePackA<uint8_t>(D, A, lda, CountM, CountK, RowSumBuffer, Scale, ZeroPoint);
+}
+
+/**
+ * @brief quantize and pack A with 16b extension to uint16_t
+ */
+void MLASCALL
+MlasQuantizeLinearPackAExtKernel(
+    int16_t* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    MlasGemmU8X8QuantizePackA<int16_t>(D, A, lda, CountM, CountK, RowSumBuffer, Scale, ZeroPoint);
+}
+
 
 MLAS_FORCEINLINE
 void
@@ -1148,6 +2108,11 @@ const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchSse = {
     nullptr,
     MLAS_GEMM_U8X8_KERNEL_SSE::PackedK,
     0,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr
 };
 
 #endif
@@ -1574,9 +2539,15 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8S8_KERNEL_SSE41>(
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8S8DispatchSse41 = {
     MlasGemmU8X8Operation<MLAS_GEMM_U8S8_KERNEL_SSE41>,
     MlasGemmU8X8PackedOperation<MLAS_GEMM_U8S8_KERNEL_SSE41>,
-    MlasGemmU8X8CopyPackB<MLAS_GEMM_U8S8_KERNEL_SSE41>,
+    MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8S8_KERNEL_SSE41>,
     MLAS_GEMM_U8S8_KERNEL_SSE41::PackedK,
     MLAS_GEMM_U8S8_KERNEL_SSE41::PackedStrides.K,
+
+    MlasGemmPackASizeT<MLAS_GEMM_U8S8_KERNEL_SSE41>,
+    MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8S8_KERNEL_SSE41>,
+    MlasGemmU8X8QuantizePackAThreaded<MLAS_GEMM_U8S8_KERNEL_SSE41>,
+    MlasGemmU8X8CopyPackBThreaded<MLAS_GEMM_U8S8_KERNEL_SSE41>,
+    nullptr //MlasGemmU8X8QuantPackBThreaded<MLAS_GEMM_U8S8_KERNEL_SSE41>
 };
 
 #endif
@@ -1724,6 +2695,253 @@ MlasGemmU8X8CopyPackB<MLAS_GEMM_U8S8_KERNEL_AVX2>(
     MlasGemmU8S8CopyPackBAvx2(D, B, ldb, CountN, CountK, ColumnSumBuffer, BIsSigned);
 }
 
+/**
+ * @brief Quantize float to int8 stored in int32
+ */
+MLAS_FORCEINLINE
+__m256i
+MlasQuantizeOpAVX(__m256 FloatVec, 
+                  __m256 ScaleVector,
+                  __m256 MinimumValueVector,
+                  __m256 MaximumValueVector,
+                  __m256i ZeroPointVector
+   )
+{
+    FloatVec = _mm256_div_ps(FloatVec, ScaleVector);
+
+    FloatVec = _mm256_max_ps(FloatVec, MinimumValueVector);
+    FloatVec = _mm256_min_ps(FloatVec, MaximumValueVector);
+
+    auto IntVec = _mm256_cvtps_epi32(FloatVec);
+    IntVec = _mm256_add_epi32(IntVec, ZeroPointVector);
+    return IntVec;
+}
+
+
+template <uint32_t ROWS>
+MLAS_FORCEINLINE
+void 
+MlasQuantizePack4x8SignedAvx2(
+    const float* b,
+    const size_t ldb,
+    __m256i LoadMask,
+    __m256 ScaleVector,
+    __m256 MinimumValueVector,
+    __m256 MaximumValueVector,
+    __m256i ZeroPointVector,
+    __m256i& ColumnSums,
+    uint8_t* D
+    )
+{
+    // TODO FIX B SIGN
+
+    __m256i IntVec0;
+    __m256i IntVec1;
+    __m256i IntVec2;
+    __m256i IntVec3;
+
+    auto FloatVec0 = _mm256_maskload_ps(b + ldb * 0, LoadMask);
+    IntVec0 = MlasQuantizeOpAVX(FloatVec0, ScaleVector, MinimumValueVector, MaximumValueVector,
+                                ZeroPointVector);
+    IntVec0 = _mm256_and_si256(IntVec0, LoadMask);
+    ColumnSums = _mm256_add_epi32(ColumnSums, IntVec0);
+
+    if (ROWS >= 2) {
+        auto FloatVec1 = _mm256_maskload_ps(b + ldb * 1, LoadMask);
+        IntVec1 = MlasQuantizeOpAVX(FloatVec1, ScaleVector, MinimumValueVector, MaximumValueVector,
+                                    ZeroPointVector);
+        IntVec1 = _mm256_and_si256(IntVec1, LoadMask);
+        ColumnSums = _mm256_add_epi32(ColumnSums, IntVec1);
+    } else {
+        IntVec1 = _mm256_setzero_si256();
+    }
+    if (ROWS >= 3) {
+        auto FloatVec2 = _mm256_maskload_ps(b + ldb * 2, LoadMask);
+        IntVec2 = MlasQuantizeOpAVX(FloatVec2, ScaleVector, MinimumValueVector,
+                                         MaximumValueVector, ZeroPointVector);
+        IntVec2 = _mm256_and_si256(IntVec2, LoadMask);
+        ColumnSums = _mm256_add_epi32(ColumnSums, IntVec2);
+    } else {
+        IntVec2 = _mm256_setzero_si256();
+    }
+    if (ROWS >= 4) {
+        auto FloatVec3 = _mm256_maskload_ps(b + ldb * 3, LoadMask);
+        IntVec3 = MlasQuantizeOpAVX(FloatVec3, ScaleVector, MinimumValueVector,
+                                         MaximumValueVector, ZeroPointVector);
+        IntVec3 = _mm256_and_si256(IntVec3, LoadMask);
+        ColumnSums = _mm256_add_epi32(ColumnSums, IntVec3);
+    } else {
+        IntVec3 = _mm256_setzero_si256();
+    }
+
+    // Float vectors are not alive now, are the registers reused?
+ 
+    // interleave 
+    // A0 B0 A1 B1 A4 B4 A5 B5
+    auto Interleave00 = _mm256_unpacklo_epi32(IntVec0, IntVec1);
+    // A2 B2 A3 B3 A6 B6 A7 B7
+    auto Interleave01 = _mm256_unpackhi_epi32(IntVec0, IntVec1);
+
+    // C0 D0 C1 D1 C4 D4 C5 D5
+    auto Interleave20 = _mm256_unpacklo_epi32(IntVec2, IntVec3);
+    // C2 D2 C3 D3 C6 D6 C7 D7
+    auto Interleave21 = _mm256_unpackhi_epi32(IntVec2, IntVec3);
+
+    // interleave again // reuse IntVec
+    // A0 B0 C0 D0 A4 B4 C4 D4
+    auto Inter0 = _mm256_unpacklo_epi64(Interleave00, Interleave20);
+    // A1 B1 C1 D1 A5 B5 C5 D5
+    auto Inter1 = _mm256_unpackhi_epi64(Interleave00, Interleave20);
+    // A2 B2 C2 D2 A6 B6 C6 D6
+    auto Inter2 = _mm256_unpacklo_epi64(Interleave01, Interleave21);
+    // A3 B3 C3 D3 A7 B7 C7 D7
+    auto Inter3 = _mm256_unpackhi_epi64(Interleave01, Interleave21);
+
+    // A0 B0 C0 D0 A1 B1 C1 D1 A4 B4 C4 D4 A5 B5 C5 D5
+    auto Shorts0 = _mm256_packs_epi32(Inter0, Inter1);
+    // A2 B2 C2 D2 A3 B3 C3 D3 A6 B6 C6 D6 A7 B7 C7 D7
+    auto Shorts1 = _mm256_packs_epi32(Inter2, Inter3);
+
+    // A0 B0 C0 D0 A1 B1 C1 D1 A2 B2 C2 D2 A3 B3 C3 D3 A4 B4 C4 D4 A5 B5 C5 D5 A6 B6 C6 D6
+    // A7 B7 C7 D7
+    auto Bytes = _mm256_packs_epi16(Shorts0, Shorts1);
+
+    _mm256_store_si256((__m256i*)D, Bytes);
+}
+
+MLAS_DECLSPEC_ALIGN(const uint32_t MlasLoadStoreMaskTable[16], 32) = {
+    0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+};
+
+template<>
+void
+MlasGemmU8X8QuantizePackB<MLAS_GEMM_U8S8_KERNEL_AVX2>(
+    MLAS_GEMM_U8S8_KERNEL_AVX2::PackedBType* D,
+    const float* B,
+    size_t ldb,
+    size_t CountN,
+    size_t CountK,
+    int32_t* ColumnSumBuffer,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    // TODO fix sign bit
+    MLAS_UNREFERENCED_PARAMETER(BIsSigned);
+
+    // constants for the entire matrix
+    constexpr int32_t MinimumValue = std::numeric_limits<int8_t>::min();
+    constexpr int32_t MaximumValue = std::numeric_limits<int8_t>::max();
+
+    const int8_t SignedZP = int8_t(ZeroPoint);
+
+    auto ScaleVector = _mm256_set1_ps(Scale);
+    auto MinimumValueVector = _mm256_set1_ps(float(MinimumValue - SignedZP));
+    auto MaximumValueVector = _mm256_set1_ps(float(MaximumValue - SignedZP));
+    auto ZeroPointVector = _mm256_set1_epi32(SignedZP);
+
+    //
+    // Pack result into 4x16 transposed block, left over columns and rows are
+    // 0 padded
+    //
+    constexpr size_t NStride = 16;
+    constexpr size_t KStride = MLAS_GEMM_U8S8_KERNEL_AVX2::PackedK;
+
+    for (size_t n = 0, stepN = NStride; n < CountN; n += stepN) {
+        stepN = std::min(CountN - n, NStride);
+
+        // B stays at first row, points at n's column
+        // b moves to the k's row
+        const float* b = B;
+
+        // 16 int32 column accumulators
+        __m256i ColumnSums[2];
+        ColumnSums[0] = _mm256_setzero_si256();
+        ColumnSums[1] = _mm256_setzero_si256();
+
+        // masks to deal with last several none 16 aligned columns
+        // only have register to process 8 columns at a time.
+        bool less8 = false;
+        auto LoadMask0 = _mm256_set1_epi64x(-1LL);
+        auto LoadMask1 = _mm256_set1_epi64x(-1LL);
+        if (stepN < 8) {
+            less8 = true;
+            LoadMask0 = _mm256_load_si256((const __m256i*)&MlasLoadStoreMaskTable[8 - stepN]);
+        } else if (stepN < 16) {
+            LoadMask1 = _mm256_load_si256((const __m256i*)&MlasLoadStoreMaskTable[8 - stepN + 8]);
+        }
+ 
+        for (size_t k = 0, stepK = KStride; k < CountK; k += stepK) {
+            stepK = std::min(CountK - k, KStride);
+            switch (stepK) {
+                case 1:
+                    MlasQuantizePack4x8SignedAvx2<1>(b, ldb, LoadMask0, ScaleVector,
+                                                       MinimumValueVector, MaximumValueVector,
+                                                       ZeroPointVector, ColumnSums[0], D);
+
+                    if (less8) {
+                        std::fill_n(D + 32, 32, uint8_t(0));
+                    } else {
+                        MlasQuantizePack4x8SignedAvx2<1>(b + 8, ldb, LoadMask1, ScaleVector,
+                                                           MinimumValueVector, MaximumValueVector,
+                                                           ZeroPointVector, ColumnSums[1], D + 32);
+                    }
+                    break;
+                case 2:
+                    MlasQuantizePack4x8SignedAvx2<2>(b, ldb, LoadMask0, ScaleVector,
+                                                       MinimumValueVector, MaximumValueVector,
+                                                       ZeroPointVector, ColumnSums[0], D);
+
+                    if (less8) {
+                        std::fill_n(D + 32, 32, uint8_t(0));
+                    } else {
+                        MlasQuantizePack4x8SignedAvx2<2>(b + 8, ldb, LoadMask1, ScaleVector,
+                                                           MinimumValueVector, MaximumValueVector,
+                                                           ZeroPointVector, ColumnSums[1], D + 32);
+                    }
+                    break;
+                case 3:
+                    MlasQuantizePack4x8SignedAvx2<3>(b, ldb, LoadMask0, ScaleVector,
+                                                       MinimumValueVector, MaximumValueVector,
+                                                       ZeroPointVector, ColumnSums[0], D);
+
+                    if (less8) {
+                        std::fill_n(D + 32, 32, uint8_t(0));
+                    } else {
+                        MlasQuantizePack4x8SignedAvx2<3>(b + 8, ldb, LoadMask1, ScaleVector,
+                                                           MinimumValueVector, MaximumValueVector,
+                                                           ZeroPointVector, ColumnSums[1], D + 32);
+                    }
+                    break;
+                default:
+                    MlasQuantizePack4x8SignedAvx2<4>(b, ldb, LoadMask0, ScaleVector,
+                                                       MinimumValueVector, MaximumValueVector,
+                                                       ZeroPointVector, ColumnSums[0], D);
+
+                    if (less8) {
+                        std::fill_n(D + 32, 32, uint8_t(0));
+                    } else {
+                        MlasQuantizePack4x8SignedAvx2<4>(b + 8, ldb, LoadMask1, ScaleVector,
+                                                           MinimumValueVector, MaximumValueVector,
+                                                           ZeroPointVector, ColumnSums[1], D + 32);
+                    }
+                    break;
+            }
+            b += ldb * stepK;
+            D += 64;
+        }
+
+        _mm256_store_si256((__m256i*)&ColumnSumBuffer[0], ColumnSums[0]);
+        _mm256_store_si256((__m256i*)&ColumnSumBuffer[8], ColumnSums[1]);
+        ColumnSumBuffer += 16;
+
+        B += stepN;  // next set of columns
+    }
+
+}
+
 template<>
 MLAS_FORCEINLINE
 size_t
@@ -1748,9 +2966,15 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8S8_KERNEL_AVX2>(
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8S8DispatchAvx2 = {
     MlasGemmU8X8Operation<MLAS_GEMM_U8S8_KERNEL_AVX2>,
     MlasGemmU8X8PackedOperation<MLAS_GEMM_U8S8_KERNEL_AVX2>,
-    MlasGemmU8X8CopyPackB<MLAS_GEMM_U8S8_KERNEL_AVX2>,
+    MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8S8_KERNEL_AVX2>,
     MLAS_GEMM_U8S8_KERNEL_AVX2::PackedK,
     MLAS_GEMM_U8S8_KERNEL_AVX2::PackedStrides.K,
+
+    MlasGemmPackASizeT<MLAS_GEMM_U8S8_KERNEL_AVX2>,
+    MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8S8_KERNEL_AVX2>,
+    MlasGemmU8X8QuantizePackAThreaded<MLAS_GEMM_U8S8_KERNEL_AVX2>,
+    MlasGemmU8X8CopyPackBThreaded<MLAS_GEMM_U8S8_KERNEL_AVX2>,
+    MlasGemmU8X8QuantPackBThreaded<MLAS_GEMM_U8S8_KERNEL_AVX2>
 };
 
 struct MLAS_GEMM_U8U8_KERNEL_AVX2
@@ -1801,6 +3025,166 @@ MlasGemmU8X8CopyPackB<MLAS_GEMM_U8U8_KERNEL_AVX2>(
     MlasGemmU8U8CopyPackBAvx2(D, B, ldb, CountN, CountK, ColumnSumBuffer);
 }
 
+
+/**
+ * @brief Quantize pack 2x8 block into unsigned 16b vector
+ *  A0 B0 A1 B1 A2 B2 A3 B3 A4 B4 A5 B5 A6 B6 A7 B7
+*/
+MLAS_FORCEINLINE 
+__m256i 
+MlasQuantizePack2x8UnsignedAvx2(
+    const float* b,
+    const size_t ldb,
+    __m256i LoadMask,
+    __m256 ScaleVector,
+    __m256 MinimumValueVector,
+    __m256 MaximumValueVector,
+    __m256i ZeroPointVector,
+    __m256i& ColumnSums)
+{
+    auto FloatVec0 = _mm256_maskload_ps(b + ldb * 0, LoadMask);
+    auto IntVec0 = MlasQuantizeOpAVX(FloatVec0, ScaleVector, MinimumValueVector, MaximumValueVector,
+                                ZeroPointVector);
+    IntVec0 = _mm256_and_si256(IntVec0, LoadMask);
+    ColumnSums = _mm256_add_epi32(ColumnSums, IntVec0);
+
+    auto FloatVec1 = _mm256_maskload_ps(b + ldb * 1, LoadMask);
+    auto IntVec1 = MlasQuantizeOpAVX(FloatVec1, ScaleVector, MinimumValueVector, MaximumValueVector,
+                                ZeroPointVector);
+    IntVec1 = _mm256_and_si256(IntVec1, LoadMask);
+    ColumnSums = _mm256_add_epi32(ColumnSums, IntVec1);
+
+
+    // interleave // reuse float vec registers
+    // A0 B0 A1 B1 A4 B4 A5 B5
+    auto Interleave00 = _mm256_unpacklo_epi32(IntVec0, IntVec1);
+    // A2 B2 A3 B3 A6 B6 A7 B7
+    auto Interleave01 = _mm256_unpackhi_epi32(IntVec0, IntVec1);
+
+    // A0 B0 A1 B1 A2 B2 A3 B3 A4 B4 A5 B5 A6 B6 A7 B7
+    auto Shorts0 = _mm256_packus_epi32(Interleave00, Interleave01);
+    return Shorts0;
+}
+
+template<>
+void
+MlasGemmU8X8QuantizePackB<MLAS_GEMM_U8U8_KERNEL_AVX2>(
+    MLAS_GEMM_U8U8_KERNEL_AVX2::PackedBType* D,
+    const float* B,
+    size_t ldb,
+    size_t CountN,
+    size_t CountK,
+    int32_t* ColumnSumBuffer,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    MLAS_UNREFERENCED_PARAMETER(BIsSigned);
+
+    // constants for the entire matrix
+    constexpr int32_t MinimumValue = std::numeric_limits<uint8_t>::min();
+    constexpr int32_t MaximumValue = std::numeric_limits<uint8_t>::max();
+
+    auto ScaleVector = _mm256_set1_ps(Scale);
+    auto MinimumValueVector = _mm256_set1_ps(float(MinimumValue - ZeroPoint));
+    auto MaximumValueVector = _mm256_set1_ps(float(MaximumValue - ZeroPoint));
+    auto ZeroPointVector = _mm256_set1_epi32(ZeroPoint);
+
+    //
+    // Pack result into 4x16 transposed block, left over columns and rows are
+    // 0 padded
+    //
+    constexpr size_t NStride = 16;
+    constexpr size_t KStride = MLAS_GEMM_U8U8_KERNEL_AVX2::PackedK;
+
+    for (size_t n = 0, stepN = NStride; n < CountN; n += stepN) {
+        stepN = std::min(CountN - n, NStride);
+
+        // B stays at first row, points at n's column
+        // b moves to the k's row
+        const float* b = B;
+
+        // 16 int32 column accumulators
+        __m256i ColumnSums[2];
+        ColumnSums[0] = _mm256_setzero_si256();
+        ColumnSums[1] = _mm256_setzero_si256();
+
+        // masks to deal with non 16 aligned columns
+        // process 8 columns at a time.
+        bool less8 = false;
+        auto LoadMask0 = _mm256_set1_epi64x(-1LL);
+        auto LoadMask1 = _mm256_set1_epi64x(-1LL);
+        if (stepN < 8) {
+            less8 = true;
+            LoadMask0 = _mm256_load_si256((const __m256i*)&MlasLoadStoreMaskTable[8 - stepN]);
+        } else if (stepN < 16) {
+            LoadMask1 = _mm256_load_si256((const __m256i*)&MlasLoadStoreMaskTable[8 - stepN + 8]);
+        }
+
+        size_t k = CountK;
+        while (k >= KStride) {
+            auto Shorts0 =
+                MlasQuantizePack2x8UnsignedAvx2(b, ldb, LoadMask0, ScaleVector, MinimumValueVector,
+                                                MaximumValueVector, ZeroPointVector, ColumnSums[0]);
+            auto Shorts1 = less8 ? _mm256_setzero_si256()
+                                 : MlasQuantizePack2x8UnsignedAvx2(
+                                       b + 8, ldb, LoadMask1, ScaleVector, MinimumValueVector,
+                                       MaximumValueVector, ZeroPointVector, ColumnSums[1]);
+
+            // A0 B0 A1 B1 A2 B2 A3 B3   A8 B8 A9 B9 A10 B10 A11 B11
+            // A4 B4 A5 B5 A6 B6 A7 B7   A12 B12 A13 B13 A14 B14 A15 B15
+            auto Bytes = _mm256_packus_epi16(Shorts0, Shorts1);
+            Bytes = _mm256_permute4x64_epi64(Bytes, 0xD8);
+            _mm256_store_si256((__m256i*)D, Bytes);
+
+            // next set of rows
+            b += ldb * KStride;
+            D += 32;
+            k -= KStride;
+        }
+        if (k > 0) {
+            // last row
+
+            // left 8 colmns
+            auto FloatVec0 = _mm256_maskload_ps(b, LoadMask0);
+            auto IntVec0 = MlasQuantizeOpAVX(FloatVec0, ScaleVector, MinimumValueVector,
+                                             MaximumValueVector, ZeroPointVector);
+            IntVec0 = _mm256_and_si256(IntVec0, LoadMask0);
+            ColumnSums[0] = _mm256_add_epi32(ColumnSums[0], IntVec0);
+
+            // right 8 columns
+            __m256i IntVec1;
+            if (less8) {
+                IntVec1 = _mm256_setzero_si256();
+            } else {
+                auto FloatVec1 = _mm256_maskload_ps(b + 8, LoadMask1);
+                IntVec1 = MlasQuantizeOpAVX(FloatVec1, ScaleVector, MinimumValueVector,
+                                                 MaximumValueVector, ZeroPointVector);
+                IntVec1 = _mm256_and_si256(IntVec1, LoadMask1);
+                ColumnSums[1] = _mm256_add_epi32(ColumnSums[1], IntVec1);
+            }
+            // A0 .. A3  A8 .. A11  A4 .. A7  A12 .. A15
+            auto Shorts = _mm256_packus_epi32(IntVec0, IntVec1);
+
+            // A0  ...  A15 in 16bits
+            Shorts = _mm256_permute4x64_epi64(Shorts, 0xD8);
+
+            _mm256_store_si256((__m256i*)D, Shorts);
+
+            b += ldb;
+            D += 32;
+        }
+
+        _mm256_store_si256((__m256i*)&ColumnSumBuffer[0], ColumnSums[0]);
+        _mm256_store_si256((__m256i*)&ColumnSumBuffer[8], ColumnSums[1]);
+        ColumnSumBuffer += 16;
+
+        B += stepN;  // next set of columns
+    }
+}
+
+
 template<>
 MLAS_FORCEINLINE
 size_t
@@ -1822,12 +3206,20 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8U8_KERNEL_AVX2>(
         RowSumBuffer, ColumnSumBuffer, ZeroPointB, ZeroMode);
 }
 
+
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8U8DispatchAvx2 = {
     MlasGemmU8X8Operation<MLAS_GEMM_U8U8_KERNEL_AVX2>,
     MlasGemmU8X8PackedOperation<MLAS_GEMM_U8U8_KERNEL_AVX2>,
-    MlasGemmU8X8CopyPackB<MLAS_GEMM_U8U8_KERNEL_AVX2>,
+    MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8U8_KERNEL_AVX2>,
     MLAS_GEMM_U8U8_KERNEL_AVX2::PackedK,
     MLAS_GEMM_U8U8_KERNEL_AVX2::PackedStrides.K,
+
+    MlasGemmPackASizeT<MLAS_GEMM_U8U8_KERNEL_AVX2>,
+    MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8U8_KERNEL_AVX2>,
+    MlasGemmU8X8QuantizePackAThreaded<MLAS_GEMM_U8U8_KERNEL_AVX2>,
+
+    MlasGemmU8X8CopyPackBThreaded<MLAS_GEMM_U8U8_KERNEL_AVX2>,
+    MlasGemmU8X8QuantPackBThreaded<MLAS_GEMM_U8U8_KERNEL_AVX2>
 };
 
 #endif
@@ -3155,7 +4547,11 @@ Return Value:
     MLAS_GEMM_U8X8_OPERATION* GemmU8X8Operation;
 
     if (Data->BIsPacked) {
-        GemmU8X8Operation = GemmU8X8Dispatch->PackedOperation;
+        if (Data->AIsPacked) {
+            GemmU8X8Operation = GemmU8X8Dispatch->AllPackedOperation;
+        } else {
+            GemmU8X8Operation = GemmU8X8Dispatch->PackedOperation;
+        }
     } else {
         GemmU8X8Operation = GemmU8X8Dispatch->Operation;
     }
@@ -3272,6 +4668,29 @@ MlasGemmBatch(
     });
 }
 
+/**
+ * @brief Partition the work of prepack A
+ * We only segment on the M dimension to reduce false sharing
+ * between threads
+ */
+MLAS_FORCEINLINE
+void
+MlasGemmSegPackA(size_t M, size_t K, size_t& StrideM)
+{
+    //
+    // M start with 16 is kind of arbitrary. The hope is to elimate false
+    // sharing among threads, as each packed row should align to 32b/4B,
+    // So 16 row should align to 64B cache line size
+    //
+
+    size_t multipler = MLAS_QGEMM_THREAD_COMPLEXITY / (MLAS_QGEMM_STRIDEN_THREAD_ALIGN * K);
+    if (multipler == 0) multipler = 1;
+
+    StrideM = MLAS_QGEMM_STRIDEN_THREAD_ALIGN * multipler;
+    if (StrideM > (M - (M / 4))) {
+        StrideM = M;
+    }
+}
 
 size_t
 MLASCALL
@@ -3335,13 +4754,43 @@ Return Value:
 
 void
 MLASCALL
+MlasQuantizeLinearPackB(
+    size_t N,
+    size_t K,
+    const float* B,
+    size_t ldb,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedB,
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(BIsSigned);
+    const auto QuantPackAFunc = GemmU8X8Dispatch->QuantPackBThdRoutine;
+
+    size_t StrideN;
+    MlasGemmSegPackA(N, K, StrideN);
+
+    size_t NumSegs = (N + StrideN - 1) / StrideN;
+    MlasTrySimpleParallel(ThreadPool, NumSegs, [=](ptrdiff_t tid) {
+        const size_t StartN = tid * StrideN;
+        const size_t CountM = std::min(StrideN, N - StartN);
+        QuantPackAFunc(N, K, StartN, CountM, B, ldb, BIsSigned, Scale, ZeroPoint, PackedB);
+    });
+}
+
+
+void
+MLASCALL
 MlasGemmPackB(
     size_t N,
     size_t K,
     const uint8_t* B,
     size_t ldb,
     bool BIsSigned,
-    void* PackedB
+    void* PackedB,
+    MLAS_THREADPOOL* ThreadPool
     )
 /*++
 
@@ -3371,67 +4820,170 @@ Return Value:
 
 --*/
 {
-    //
-    // Retrieve the packing parameters.
-    //
-
     const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(BIsSigned);
+    const auto PackBFunc = GemmU8X8Dispatch->CopyPackBThdRoutine;
 
-    size_t PackedK = GemmU8X8Dispatch->PackedK;
-    size_t PackedStrideK = GemmU8X8Dispatch->PackedStrideK;
+    size_t StrideN;
+    MlasGemmSegPackA(N, K, StrideN);
 
-    //
-    // Reserve and initialize storage for the column sum buffer to hold the sums
-    // of the elements along each of the columns.
-    //
+    size_t NumSegs = (N + StrideN - 1) / StrideN;
+    MlasTrySimpleParallel(ThreadPool, NumSegs, [=](ptrdiff_t tid) {
+        const size_t StartN = tid * StrideN;
+        const size_t CountN = std::min(StrideN, N - StartN);
+        PackBFunc(N, K, StartN, CountN, B, ldb, BIsSigned, PackedB);
+    });
+}
 
-    const size_t AlignedN =
-        (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+size_t
+MLASCALL 
+MlasGemmPackASize(
+    size_t M,
+    size_t K,
+    bool BIsSigned
+    )
+{
+    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(BIsSigned);
+    return GemmU8X8Dispatch->PackASizeRoutine(M, K);
+}
 
-    int32_t* PackedColumnSumBuffer = (int32_t*)PackedB;
-    std::fill_n(PackedColumnSumBuffer, AlignedN, 0);
-    PackedB = PackedColumnSumBuffer + AlignedN;
+void
+MLASCALL
+MlasQuantizeLinearPackA(
+    size_t M,
+    size_t K,
+    const float* A,
+    size_t lda,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedA,
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(BIsSigned);
+    const auto QuantPackAFunc = GemmU8X8Dispatch->QuantPackAThdRoutine;
 
-    //
-    // Step through each slice of matrix B along the K dimension.
-    //
+    size_t StrideM;
+    MlasGemmSegPackA(M, K, StrideM);
 
-    size_t CountK;
+    size_t NumSegs = (M + StrideM - 1) / StrideM;
+    MlasTrySimpleParallel(ThreadPool, NumSegs, [=](ptrdiff_t tid) {
+        const size_t StartM = tid * StrideM;
+        const size_t CountM = std::min(StrideM, M - StartM);
+        QuantPackAFunc(M, K, StartM, CountM, A, lda, Scale, ZeroPoint, PackedA);
+    });
+}
 
-    for (size_t k = 0; k < K; k += CountK) {
+void
+MLASCALL
+MlasGemmPackA(
+    size_t M,
+    size_t K,
+    bool BIsSigned,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedA,
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(BIsSigned);
+    const auto PackAFunc = GemmU8X8Dispatch->CopyPackAThdRoutine;
 
-        CountK = std::min(K - k, PackedStrideK);
+    size_t StrideM;
+    MlasGemmSegPackA(M, K, StrideM);
+    
+    size_t NumSegs = (M + StrideM - 1) / StrideM;
+    MlasTrySimpleParallel(ThreadPool, NumSegs, [=](ptrdiff_t tid) {
+        const size_t StartM = tid * StrideM;
+        const size_t CountM = std::min(StrideM, M - StartM);
+        PackAFunc(M, K, StartM, CountM, A, lda, PackedA);
+    });
+}
 
-        //
-        // Step through each slice of matrix B along the N dimension.
-        //
+void MLASCALL
+MlasGemmPackAandB(
+    size_t M,
+    size_t N,
+    size_t K,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedA,
+    const uint8_t* B,
+    bool BIsSigned,
+    size_t ldb,
+    void * PackedB,
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(BIsSigned);
+    const auto PackAFunc = GemmU8X8Dispatch->CopyPackAThdRoutine;
+    const auto PackBFunc = GemmU8X8Dispatch->CopyPackBThdRoutine;
 
-        const size_t AlignedK = (CountK + PackedK - 1) & ~(PackedK - 1);
-        uint8_t* pb = (uint8_t*)PackedB;
-        size_t CountN;
+    size_t StrideM;
+    MlasGemmSegPackA(M, K, StrideM);
+    size_t NumMSegs = (M + StrideM - 1) / StrideM;
 
-        for (size_t n = 0; n < N; n += CountN) {
+    size_t StrideN;
+    MlasGemmSegPackA(N, K, StrideN);
+    size_t NumNSegs = (N + StrideN - 1) / StrideN;
 
-            constexpr size_t BatchedN = 128;
-            MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[BatchedN], 64);
-
-            CountN = std::min(N - n, BatchedN);
-
-            GemmU8X8Dispatch->CopyPackBRoutine(pb, B + n, ldb, CountN, CountK, ColumnSumBuffer, BIsSigned);
-
-            //
-            // Accumulate this batch of the column sum buffer into the packed
-            // buffer accumulators.
-            //
-
-            for (size_t nn = 0; nn < CountN; nn++) {
-                PackedColumnSumBuffer[n + nn] += ColumnSumBuffer[nn];
-            }
-
-            pb += CountN * AlignedK;
+    MlasTrySimpleParallel(ThreadPool, NumMSegs + NumNSegs, [=](ptrdiff_t tid) {
+        if (size_t(tid) < NumMSegs) {
+            const size_t StartM = tid * StrideM;
+            const size_t CountM = std::min(StrideM, M - StartM);
+            PackAFunc(M, K, StartM, CountM, A, lda, PackedA);
+        } else {
+            tid -= NumMSegs;
+            const size_t StartN = tid * StrideN;
+            const size_t CountN = std::min(StrideN, N - StartN);
+            PackBFunc(N, K, StartN, CountN, B, ldb, BIsSigned, PackedB);
         }
+    });
+}
 
-        PackedB = (uint8_t*)PackedB + AlignedN * AlignedK;
-        B += ldb * CountK;
-    }
+void
+MLASCALL
+MlasQuantizeLinearPackAandB(
+    size_t M,
+    size_t N,
+    size_t K,
+    const float* A,
+    size_t lda,
+    float AScale,
+    uint8_t AZeroPoint,
+    void* PackedA,
+    const float* B,
+    bool BIsSigned,
+    size_t ldb,
+    float BScale,
+    uint8_t BZeroPoint,
+    void* PackedB,
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(BIsSigned);
+    const auto QuantPackAFunc = GemmU8X8Dispatch->QuantPackAThdRoutine;
+    const auto QuantPackBFunc = GemmU8X8Dispatch->QuantPackBThdRoutine;
+
+    size_t StrideM;
+    MlasGemmSegPackA(M, K, StrideM);
+    size_t NumMSegs = (M + StrideM - 1) / StrideM;
+
+    size_t StrideN;
+    MlasGemmSegPackA(N, K, StrideN);
+    size_t NumNSegs = (N + StrideN - 1) / StrideN;
+
+
+    MlasTrySimpleParallel(ThreadPool, NumMSegs + NumNSegs, [=](ptrdiff_t tid) {
+        if (size_t(tid) < NumMSegs) {
+            const size_t StartM = tid * StrideM;
+            const size_t CountM = std::min(StrideM, M - StartM);
+            QuantPackAFunc(M, K, StartM, CountM, A, lda, AScale, AZeroPoint, PackedA);
+        } else {
+            tid -= NumMSegs;
+            const size_t StartN = tid * StrideN;
+            const size_t CountN = std::min(StrideN, N - StartN);
+            QuantPackBFunc(N, K, StartN, CountN, B, ldb, BIsSigned, BScale, BZeroPoint, PackedB);
+        }
+    });
 }

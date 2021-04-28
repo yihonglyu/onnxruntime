@@ -533,6 +533,7 @@ struct MLAS_GEMM_U8X8_DATA_PARAMS {
     const uint8_t* A = nullptr;
     size_t lda = 0;
     uint8_t ZeroPointA = 0;
+    bool AIsPacked = false;
     const void* B = 0;
     size_t ldb = 0;
     const uint8_t* ZeroPointB = nullptr;
@@ -576,6 +577,76 @@ MlasGemmBatch(
 // Buffer packing routines.
 //
 
+/**
+ * @brief   Calculate buffer size (in bytes) for prepacked quantized A
+ *          Where A is a matrix for a later GEMM(A x B)
+ * 
+ * @param M           Number of rows in A
+ * @param K           Number of columns in A
+ * @param BIsSigned   Whether the B's value is signed int
+ * @return            buffer size in bytes
+*/
+size_t
+MLASCALL 
+MlasGemmPackASize(
+    size_t M,
+    size_t K,
+    bool BIsSigned
+    );
+
+/**
+ * @brief Prepack A for later QGEMM operation
+ * @param M 
+ * @param K 
+ * @param BIsSigned 
+ * @param A 
+ * @param lda 
+ * @param PackedA 
+ * @param ThreadPool 
+ * @return 
+*/
+void
+MLASCALL
+MlasGemmPackA(
+    size_t M,
+    size_t K,
+    bool BIsSigned,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedA,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
+/**
+ * @brief Perform Quantization and Prepacking of A in one shot
+ * 
+ * @param M           Number of rows in A
+ * @param K           Number of columns in A
+ * @param A           Single precison float matrix A
+ * @param lda         Leading dimension of A
+ * @param BIsSigned   Whether B's value is signed int may affect packing of A
+ * @param Scale       Scale factor parameter of quantization
+ * @param ZeroPoint   Zero point parameter of quantization
+ * @param PackedA     Caller allocated buffer for quantized and packed A
+ *                    Buffer size given by
+ *                    MlasGemmPackASize(size_t, size_t, bool)
+ * @param ThreadPool 
+ * @return 
+*/
+void
+MLASCALL
+MlasQuantizeLinearPackA(
+    size_t M,
+    size_t K,
+    const float* A,
+    size_t lda,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedA,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
 size_t
 MLASCALL
 MlasGemmPackBSize(
@@ -604,14 +675,66 @@ MlasGemmPackBSize(
 
 void
 MLASCALL
+MlasQuantizeLinearPackB(
+    size_t N,
+    size_t K,
+    const float* B,
+    size_t ldb,
+    bool BIsSigned,
+    float Scale,
+    uint8_t ZeroPoint,
+    void* PackedB,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
+void
+MLASCALL
 MlasGemmPackB(
     size_t N,
     size_t K,
     const uint8_t* B,
     size_t ldb,
     bool BIsSigned,
-    void* PackedB
+    void* PackedB,
+    MLAS_THREADPOOL* ThreadPool = nullptr
     );
+
+
+void
+MLASCALL
+MlasQuantizeLinearPackAandB(
+    size_t M,
+    size_t N,
+    size_t K,
+    const float* A,
+    size_t lda,
+    float AScale,
+    uint8_t AZeroPoint,
+    void* PackedA,
+    const float* B,
+    bool BIsSigned,
+    size_t ldb,
+    float BScale,
+    uint8_t BZeroPoint,
+    void* PackedB,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
+void MLASCALL
+MlasGemmPackAandB(
+    size_t M,
+    size_t N,
+    size_t K,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedA,
+    const uint8_t* B,
+    bool BIsSigned,
+    size_t ldb,
+    void * PackedB,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
 
 //
 // Convolution routines.
@@ -961,6 +1084,39 @@ MlasQuantizeLinear(
     size_t N,
     float Scale,
     OutputType ZeroPoint
+    );
+
+/**
+ * @brief Quantize and prepack A matrix for a later QGEMM operation
+ *
+ * Quantized A should always be unsigned byte (uint8_t). We prepack the
+ * quantized result to prepare for QGEMM. Packing arrange the matrix into
+ * the same shape, with the K dimension (row) aligned to 32b boundary and
+ * padded with 0.
+ *
+ * Values in packed matrix can be either uint8_t or uint16_t, because
+ * some QGEMM kernels need to extend A to 16b and others keep 8b.
+ *
+ * @param A         Buffer for floating matrix A
+ * @param PackedA   Buffer for output: quantized and packed A
+ * @param M         Number of rows for A
+ * @param K         Number of columns for A
+ * @param Scale     Quantization scale
+ * @param ZeroPoint Quantization zero point value
+ * @param BIsSigned Whether the B matrix (used in later QGEMM) has signed
+ *                  value (int8_t). Some kernel may decide to extend packed
+ *                  A values to 16b based on this information.
+ */
+void
+MLASCALL
+MlasQuantizeLinearPackA(
+    const float* A,
+    void* PackedA,
+    size_t M,
+    size_t K,
+    float Scale,
+    uint8_t ZeroPoint,
+    bool BIsSigned
     );
 
 /**

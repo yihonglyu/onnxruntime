@@ -32,3 +32,13 @@ std::vector<ElementType> RandomVectorUniform(
 std::vector<float> RandomVectorUniform(std::vector<int64_t> shape, float min_value, float max_value);
 
 std::vector<int64_t> BenchArgsVector(benchmark::State& state, size_t& start, size_t count);
+
+
+constexpr size_t MLAS_BENCH_BUF_ALIGN = 64;
+
+template <typename T>
+T* AlignAddr(T* buf) {
+  std::ptrdiff_t addr = reinterpret_cast<std::ptrdiff_t>(buf);
+  addr = (addr + MLAS_BENCH_BUF_ALIGN - 1) & ~(MLAS_BENCH_BUF_ALIGN - 1);
+  return reinterpret_cast<T*>(addr);
+}

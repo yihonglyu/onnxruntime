@@ -465,6 +465,40 @@ void
     int8_t ZeroPoint
     );
 
+/**
+ * @brief Function of quantize an pack A for QGEMM(A, B)
+ *        no 16b extension
+ */
+typedef
+void
+(MLASCALL MLAS_QUANTIZE_LINEAR_PACKA_KERNEL)(
+    uint8_t* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    );
+
+/**
+ * @brief Function of quantize and pack A for QGEMM(A, B)
+ *        with 0 extending 8b to 16b
+ */
+typedef
+void
+(MLASCALL MLAS_QUANTIZE_LINEAR_PACKA_EXT_KERNEL)(
+    int16_t* D,
+    const float* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    float Scale,
+    uint8_t ZeroPoint
+    );
+
 template<typename FilterType>
 struct MLAS_U8X8_KERNEL
 {
@@ -576,6 +610,8 @@ extern "C" {
     MLAS_QLINEAR_BINARY_OP_U8_KERNEL MlasQLinearAddU8Kernel;
     MLAS_QUANTIZE_LINEAR_S8_KERNEL MlasQuantizeLinearS8Kernel;
     MLAS_QUANTIZE_LINEAR_U8_KERNEL MlasQuantizeLinearU8Kernel;
+    MLAS_QUANTIZE_LINEAR_PACKA_KERNEL MlasQuantizeLinearPackAKernel;
+    MLAS_QUANTIZE_LINEAR_PACKA_EXT_KERNEL MlasQuantizeLinearPackAExtKernel;
 #if defined(MLAS_TARGET_AMD64)
     MLAS_COMPUTE_UNARY_FLOAT_KERNEL MlasErfKernelFma3;
     MLAS_COMPUTE_UNARY_FLOAT_KERNEL MlasComputeExpF32KernelFma3;
@@ -590,6 +626,8 @@ extern "C" {
     MLAS_QLINEAR_BINARY_OP_U8_KERNEL MlasQLinearAddU8KernelAvx2;
     MLAS_QUANTIZE_LINEAR_S8_KERNEL MlasQuantizeLinearS8KernelAvx512F;
     MLAS_QUANTIZE_LINEAR_U8_KERNEL MlasQuantizeLinearU8KernelAvx512F;
+    MLAS_QUANTIZE_LINEAR_PACKA_KERNEL MlasQuantizeLinearPackAKernelAvx512F;
+    MLAS_QUANTIZE_LINEAR_PACKA_EXT_KERNEL MlasQuantizeLinearPackAExtKernelAvx512F;
 #endif
 
     MLAS_REDUCE_MAXIMUM_FLOAT_KERNEL MlasReduceMaximumF32Kernel;
@@ -736,6 +774,8 @@ struct MLAS_PLATFORM {
     MLAS_REDUCE_MINIMUM_MAXIMUM_FLOAT_KERNEL* ReduceMinimumMaximumF32Kernel;
     MLAS_QUANTIZE_LINEAR_S8_KERNEL* QuantizeLinearS8Kernel;
     MLAS_QUANTIZE_LINEAR_U8_KERNEL* QuantizeLinearU8Kernel;
+    MLAS_QUANTIZE_LINEAR_PACKA_KERNEL* QuantizeLinearPackAKernel;
+    MLAS_QUANTIZE_LINEAR_PACKA_EXT_KERNEL* QuantizeLinearPackAExtKernel;
     uint32_t NchwcBlockSize;
     uint32_t PreferredBufferAlignment;
     int32_t MaximumThreadCount;
@@ -1845,4 +1885,61 @@ MlasReadTimeStampCounter(void)
     return 0;
 #endif
 #endif
+}
+
+/**
+ * @brief For a packed quantized buffer, locate row/col sum buffer and the
+ *        start of the value buffer
+ * 
+ * Pre-packing is to re-arrange a quantized matrix to prepare for QGEMM
+ * multiplication kernel. We reserve top portion of the buffer for row/col
+ * sums, and align to 64B (cacheline) boundary
+ * 
+ * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
+ * @param [IN]  NumSums     Number of row/col sums needed
+ * @param [OUT] SumBuf      Points to the row/col sums buffer
+ * @param [OUT] ValBuf      Points to the quantized value buffer
+ */
+template<typename PackedValType>
+MLAS_FORCEINLINE
+void
+MlasGetSumValBufFromPacked(
+    const void* PackedBuf,
+    const size_t NumSums,
+    const int32_t*& SumBuf,
+    const PackedValType*& ValBuf)
+{
+    SumBuf = reinterpret_cast<const int32_t*>(PackedBuf);
+    const size_t Aligned = (NumSums + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1)
+        & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    ValBuf = reinterpret_cast<const PackedValType*>(SumBuf + Aligned);
+}
+
+/**
+ * @brief Mutable version of MlasGetSumValBufFromPacked. For a packed
+ *        quantized buffer, locate row/col sum buffer and the start of
+ *        the value buffer
+ *
+ * Pre-packing is to re-arrange a quantized matrix to prepare for QGEMM
+ * multiplication kernel. We reserve top portion of the buffer for row/col
+ * sums, and align to 64B (cacheline) boundary
+ *
+ * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
+ * @param [IN]  NumSums     Number of row/col sums needed
+ * @param [OUT] SumBuf      Points to the row/col sums buffer
+ * @param [OUT] ValBuf      Points to the quantized value buffer
+ */
+template<typename PackedValType>
+MLAS_FORCEINLINE
+void
+MlasGetSumValBufFromPackedMutable(
+    void* PackedBuf,
+    const size_t NumSums,
+    int32_t*& SumBuf,
+    PackedValType*& ValBuf)
+{
+    SumBuf = reinterpret_cast<int32_t*>(PackedBuf);
+    const size_t Aligned = (NumSums + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1)
+        & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    ValBuf = reinterpret_cast<PackedValType*>(SumBuf + Aligned);
 }

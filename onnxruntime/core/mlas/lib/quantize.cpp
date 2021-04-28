@@ -274,6 +274,153 @@ MlasQuantizeLinear<uint8_t>(
         Input, Output, N, Scale, ZeroPoint);
 }
 
+/*****************************************************
+template<typename OutputType>
+MLAS_FORCEINLINE void
+StorePackAResult(OutputType* Output, MLAS_INT32X4 IntegerVector);
+
+template <>
+MLAS_FORCEINLINE void
+StorePackAResult<uint8_t>(
+    uint8_t* Output,
+    MLAS_INT32X4 IntegerVector
+    )
+{
+    // TODO NEON impl
+    IntegerVector = _mm_packus_epi16(IntegerVector, IntegerVector);
+    IntegerVector = _mm_packus_epi16(IntegerVector, IntegerVector);
+    *((int32_t*)Output) = _mm_cvtsi128_si32(IntegerVector);
+}
+
+template <>
+MLAS_FORCEINLINE void
+StorePackAResult<uint16_t>(
+    uint16_t* Output,
+    MLAS_INT32X4 IntegerVector
+    )
+{
+    // TODO NEON impl
+    IntegerVector = _mm_packus_epi16(IntegerVector, IntegerVector);
+    *((int64_t*)Output) = _mm_cvtsi128_si64(IntegerVector);
+}
+
+
+/**
+ * @brief Quantize and prepack A, SSE implementation
+ *
+ * Type parameter OutputType can be either uint8_t or int16_t, because
+ * some QGEMM kernels need to extend A to 16b and others keep 8b.
+ * Since quantized A is always uint8_t, extension to 16b is simple
+ * zero extension
+ *
+ * @param A         Buffer for floating matrix A
+ * @param PackedA   Buffer for output: quantized and packed A
+ * @param M         Number of rows for A
+ * @param K         Number of columns for A
+ * @param Scale     Quantization scale
+ * @param ZeroPoint Quantization zero point value
+ *
+template<typename OutputType>
+MLAS_FORCEINLINE
+void
+MlasQuantizeLinearPackAKernelT(
+    const float* A,
+    OutputType* PackedA,
+    size_t M,
+    size_t K,
+    float Scale,
+    uint8_t ZeroPoint
+    )
+{
+    // Leave room for row sums
+    int32_t* PackedRowSumbuf = nullptr;
+    MlasGetSumValBufFromPackedMutable<OutputType>(PackedA, M, PackedRowSumbuf, PackedA);
+
+    // For each row, packed A needs to be padded (with 0) to 32b boundary
+    constexpr size_t kbound = 4 / sizeof(OutputType);
+    const size_t AlignedK = (K + kbound - 1) & ~(kbound - 1);
+
+    // constants for the entire matrix
+    constexpr int32_t MinimumValue = std::numeric_limits<uint8_t>::min();
+    constexpr int32_t MaximumValue = std::numeric_limits<uint8_t>::max();
+
+    auto ScaleVector = MlasBroadcastFloat32x4(Scale);
+    auto MinimumValueVector = MlasBroadcastFloat32x4(float(MinimumValue - ZeroPoint));
+    auto MaximumValueVector = MlasBroadcastFloat32x4(float(MaximumValue - ZeroPoint));
+    auto ZeroPointVector = MlasBroadcastInt32x4(ZeroPoint);
+
+    for (size_t m = 0; m < M; m++) {
+        // Starting of a new row
+        auto Input = A + m * K;
+        auto Output = PackedA + m * AlignedK;
+        size_t N = K;
+
+        // row accumulator
+        // TODO NEON
+        auto AccVector = _mm_setzero_si128();
+
+        while (N >= 4) {
+            auto FloatVector = MlasLoadFloat32x4(Input);
+            auto IntegerVector = MlasQuantizeLinearVector(
+                FloatVector, ScaleVector, MinimumValueVector, MaximumValueVector, ZeroPointVector);
+
+            AccVector = _mm_add_epi32(IntegerVector, AccVector);
+            StorePackAResult(Output, IntegerVector);
+
+            Input += 4;
+            Output += 4;
+            N -= 4;
+        }
+
+        // Reduce row sum vector
+        // TODO NEON impl
+        AccVector = _mm_hadd_epi32(AccVector, AccVector);
+        AccVector = _mm_hadd_epi32(AccVector, AccVector);
+
+        for (size_t n = 0; n < N; n++) {
+#if defined(MLAS_NEON64_INTRINSICS)
+            auto FloatVector = vld1q_dup_f32(Input + n);
+#else
+            auto FloatVector = _mm_load_ss(Input + n);
+#endif
+            auto IntegerVector = MlasQuantizeLinearVector(
+                FloatVector, ScaleVector, MinimumValueVector, MaximumValueVector, ZeroPointVector);
+            AccVector = _mm_add_epi32(IntegerVector, AccVector);
+
+#if defined(MLAS_NEON64_INTRINSICS)
+            // TODO!!
+            TODO vst1q_lane_u8((uint8_t*)Output + n, vreinterpretq_u8_s32(IntegerVector), 0);
+#else
+            Output[n] = (OutputType)_mm_cvtsi128_si32(IntegerVector);
+#endif
+        }
+        // TODO NEON impl
+        PackedRowSumbuf[m] = _mm_cvtsi128_si32(AccVector);
+        std::fill_n(Output + K, AlignedK - K, 0);
+    }
+}
+
+/**
+ * @brief quantize and pack A to uint8_t
+ *
+void MLASCALL
+MlasQuantizeLinearPackAKernel(
+    const float* A, uint8_t* PackedA, size_t M, size_t K, float Scale, uint8_t ZeroPoint)
+{
+    MlasQuantizeLinearPackAKernelT<uint8_t>(A, PackedA, M, K, Scale, ZeroPoint);
+}
+
+/**
+ * @brief quantize and pack A with 16b extension to uint16_t
+ *
+void MLASCALL
+MlasQuantizeLinearPackAExtKernel(
+    const float* A, int16_t* PackedA, size_t M, size_t K, float Scale, uint8_t ZeroPoint)
+{
+    MlasQuantizeLinearPackAKernelT<int16_t>(A, PackedA, M, K, Scale, ZeroPoint);
+}
+*/
+
 #else
 
 //
