@@ -7,13 +7,6 @@
 
 template <bool Packed, bool Threaded>
 class MlasQgemmU8X8U8X8TestBase : public MlasTestBase {
- private:
-  void* PackB(size_t N, size_t K, const uint8_t* B, size_t ldb, bool BIsSigned) {
-    size_t PackedBSize = MlasGemmPackBSize(N, K, BIsSigned);
-    void* PackedB = BufferBPacked.GetBuffer(PackedBSize);
-    MlasGemmPackB(N, K, B, ldb, BIsSigned, PackedB);
-    return PackedB;
-  }
 
  protected:
   MLAS_THREADPOOL* threadpool_;
@@ -39,6 +32,12 @@ class MlasQgemmU8X8U8X8TestBase : public MlasTestBase {
     GemmShape.K = K;
     GemmShape.BIsSigned = BIsSigned;
 
+    size_t PackedBSize = MlasGemmPackBSize(N, K, BIsSigned);
+    uint8_t* PackedB = BufferBPacked.GetBuffer(PackedBSize * BatchSize);
+
+    size_t PackedASize = MlasGemmPackASize(M, K, BIsSigned);
+    uint8_t* PackedA = BufferAPacked.GetBuffer(PackedASize * BatchSize);
+
     std::vector<MLAS_GEMM_U8X8_DATA_PARAMS> GemmParameters(BatchSize);
 
     for (size_t i = 0; i < GemmParameters.size(); i++) {
@@ -49,10 +48,12 @@ class MlasQgemmU8X8U8X8TestBase : public MlasTestBase {
       params.ZeroPointB = &offb;
       params.C = C + (M * N * i);
       params.ldc = ldc;
+      params.PackedA = PackedA + i * PackedASize;
+      params.PackedB = PackedB + i * PackedBSize;
 
       if (Packed) {
-        ASSERT_EQ(BatchSize, size_t(1)) << "Packing B not supported in batching yet!";
-        params.B = PackB(N, K, B, ldb, BIsSigned);
+        MlasGemmPackB(N, K, B, ldb, BIsSigned, params.PackedB, threadpool_);
+        params.B = nullptr;
         params.BIsPacked = true;
       } else {
         params.B = B + (K * N * i);
@@ -82,6 +83,12 @@ class MlasQgemmU8X8U8X8TestBase : public MlasTestBase {
     GemmShape.K = K;
     GemmShape.BIsSigned = BIsSigned;
 
+    size_t PackedBSize = MlasGemmPackBSize(N, K, BIsSigned);
+    uint8_t* PackedB = BufferBPacked.GetBuffer(PackedBSize * BatchSize);
+
+    size_t PackedASize = MlasGemmPackASize(M, K, BIsSigned);
+    uint8_t* PackedA = BufferAPacked.GetBuffer(PackedASize * BatchSize);
+
     std::vector<MLAS_GEMM_U8X8_DATA_PARAMS> GemmParameters(BatchSize);
 
     for (size_t i = 0; i < GemmParameters.size(); i++) {
@@ -93,10 +100,12 @@ class MlasQgemmU8X8U8X8TestBase : public MlasTestBase {
       params.PerColumnZeroPoints = true;
       params.C = C + M * N * i;
       params.ldc = ldc;
+      params.PackedA = PackedA + i * PackedASize;
+      params.PackedB = PackedB + i * PackedBSize;
 
       if (Packed) {
-        ASSERT_EQ(BatchSize, size_t(1)) << "Packing B not supported in batching yet!";
-        params.B = PackB(N, K, B, ldb, BIsSigned);
+        MlasGemmPackB(N, K, B, ldb, BIsSigned, params.PackedB, threadpool_);
+        params.B = nullptr;
         params.BIsPacked = true;
       } else {
         params.B = B + K * N * i;
@@ -128,30 +137,40 @@ class MlasQgemmU8X8U8X8TestBase : public MlasTestBase {
     GemmShape.K = K;
     GemmShape.BIsSigned = BIsSigned;
 
+    size_t PackedBSize = MlasGemmPackBSize(N, K, BIsSigned);
+    uint8_t* PackedB = BufferBPacked.GetBuffer(PackedBSize * BatchSize);
+
+    size_t PackedASize = MlasGemmPackASize(M, K, BIsSigned);
+    uint8_t* PackedA = BufferAPacked.GetBuffer(PackedASize * BatchSize);
+
+
     std::vector<MLAS_QGEMM_SCALE_BIAS_OUTPUT_PROCESSOR> ScaleBiasProcessors;
     ScaleBiasProcessors.reserve(BatchSize);
 
     std::vector<MLAS_GEMM_U8X8_DATA_PARAMS> GemmParameters(BatchSize);
 
     for (size_t i = 0; i < BatchSize; i++) {
+      ScaleBiasProcessors.emplace_back(C + M * N * i, ldc, &CScale, Bias);
+
       auto& params = GemmParameters[i];
+      params.OutputProcessor = &(ScaleBiasProcessors[i]);
       params.A = A + M * K * i;
       params.lda = lda;
       params.ZeroPointA = offa;
       params.ZeroPointB = &offb;
       params.C = reinterpret_cast<int32_t*>(C + M * N * i);
       params.ldc = ldc;
+      params.PackedA = PackedA + i * PackedASize;
+      params.PackedB = PackedB + i * PackedBSize;
 
       if (Packed) {
-        // Packed B not supported in batching yet
-        params.B = PackB(N, K, B, ldb, BIsSigned);
+        MlasGemmPackB(N, K, B, ldb, BIsSigned, params.PackedB, threadpool_);
+        params.B = nullptr;
         params.BIsPacked = true;
       } else {
         params.B = B + K * N * i;
         params.ldb = ldb;
       }
-      ScaleBiasProcessors.emplace_back(C + M * N * i, ldc, &CScale, Bias);
-      params.OutputProcessor = &(ScaleBiasProcessors[i]);
     }
 
     MlasGemmBatch(GemmShape, GemmParameters.data(), BatchSize, threadpool_);
@@ -159,6 +178,7 @@ class MlasQgemmU8X8U8X8TestBase : public MlasTestBase {
 
  private:
   MatrixGuardBuffer<uint8_t> BufferBPacked;
+  MatrixGuardBuffer<uint8_t> BufferAPacked;
 };
 
 template <typename xint8_t, typename OutputType, bool Packed, bool Threaded>

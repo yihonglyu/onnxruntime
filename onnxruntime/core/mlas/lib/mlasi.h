@@ -1838,3 +1838,88 @@ MlasReadTimeStampCounter(void)
 #endif
 #endif
 }
+
+enum class PackingStatus : std::uint64_t {
+    kNotStarted = 0,  // No thread has started packing this block yet.
+    kInProgress,      // Some thread is currently packing this block.
+    kFinished         // This block has already been packed.
+};
+
+/**
+ * @brief For a packed quantized buffer, locate row/col sum buffer and the
+ *        start of the value buffer
+ * 
+ * Pre-packing is to re-arrange a quantized matrix to prepare for QGEMM
+ * multiplication kernel. We reserve top portion of the buffer for row/col
+ * sums, and align to 64B (cacheline) boundary
+ * 
+ * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
+ * @param [IN]  NumSums     Number of row/col sums needed
+ * @param [OUT] SumBuf      Points to the row/col sums buffer
+ * @param [OUT] PackStatus  Packing status buffer
+ * @param [OUT] ValBuf      Points to the quantized value buffer
+ */
+template<typename PackedValType>
+MLAS_FORCEINLINE
+void
+MlasGetSumValBufFromPacked(
+    const void* PackedBuf,
+    const size_t NumSums,
+    const int32_t*& SumBuf,
+    const std::atomic<PackingStatus>*& PackStatus,
+    const PackedValType*& ValBuf)
+{
+    const uint8_t* start = reinterpret_cast<const uint8_t*>(PackedBuf);
+
+    // one sum per  col/row
+    SumBuf = reinterpret_cast<const int32_t*>(start);
+    size_t headerSize = NumSums * sizeof(int32_t);
+    headerSize = (headerSize + 63) & ~(63);
+
+    // one packing status per 16 col/row
+    PackStatus = reinterpret_cast<const std::atomic<PackingStatus>*>(start + headerSize);
+    headerSize +=
+        ((NumSums + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 64;
+
+    ValBuf = reinterpret_cast<const PackedValType*>(start + headerSize);
+}
+
+/**
+ * @brief Mutable version of MlasGetSumValBufFromPacked. For a packed
+ *        quantized buffer, locate row/col sum buffer and the start of
+ *        the value buffer
+ *
+ * Pre-packing is to re-arrange a quantized matrix to prepare for QGEMM
+ * multiplication kernel. We reserve top portion of the buffer for row/col
+ * sums, and align to 64B (cacheline) boundary
+ *
+ * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
+ * @param [IN]  NumSums     Number of row/col sums needed
+ * @param [OUT] SumBuf      Points to the row/col sums buffer
+ * @param [OUT] PackStatus  Packing status buffer
+ * @param [OUT] ValBuf      Points to the quantized value buffer
+ */
+template<typename PackedValType>
+MLAS_FORCEINLINE
+void
+MlasGetSumValBufFromPackedMutable(
+    void* PackedBuf,
+    const size_t NumSums,
+    int32_t*& SumBuf,
+    std::atomic<PackingStatus>*& PackStatus,
+    PackedValType*& ValBuf)
+{
+    uint8_t* start = reinterpret_cast<uint8_t*>(PackedBuf);
+
+    // one sum per  col/row
+    SumBuf = reinterpret_cast<int32_t*>(start);
+    size_t headerSize = NumSums * sizeof(int32_t);
+    headerSize = (headerSize + 63) & ~(63);
+
+    // one packing status per 16 col/row
+    PackStatus = reinterpret_cast<std::atomic<PackingStatus>*>(start + headerSize);
+    headerSize +=
+        ((NumSums + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 64;
+
+    ValBuf = reinterpret_cast<PackedValType*>(start + headerSize);
+}

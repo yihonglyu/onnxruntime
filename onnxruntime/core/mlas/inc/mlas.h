@@ -533,10 +533,12 @@ struct MLAS_GEMM_U8X8_DATA_PARAMS {
     const uint8_t* A = nullptr;
     size_t lda = 0;
     uint8_t ZeroPointA = 0;
+    void* PackedA = nullptr;
     const void* B = 0;
     size_t ldb = 0;
     const uint8_t* ZeroPointB = nullptr;
     bool BIsPacked = false;
+    void* PackedB = nullptr;
     bool PerColumnZeroPoints = false;
     int32_t* C = nullptr;
     size_t ldc = 0;
@@ -576,6 +578,47 @@ MlasGemmBatch(
 // Buffer packing routines.
 //
 
+/**
+ * @brief   Calculate buffer size (in bytes) for prepacked quantized A
+ *          Where A is a matrix for a later GEMM(A x B)
+ * 
+ * @param M           Number of rows in A
+ * @param K           Number of columns in A
+ * @param BIsSigned   Whether the B's value is signed int
+ * @return            buffer size in bytes
+*/
+size_t
+MLASCALL 
+MlasGemmPackASize(
+    size_t M,
+    size_t K,
+    bool BIsSigned
+    );
+
+/**
+ * @brief Prepack A for later QGEMM operation
+ * @param M 
+ * @param K 
+ * @param BIsSigned 
+ * @param A 
+ * @param lda 
+ * @param PackedA 
+ * @param ThreadPool 
+ * @return 
+*/
+void
+MLASCALL
+MlasGemmPackA(
+    size_t M,
+    size_t K,
+    bool BIsSigned,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedA,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
+
 size_t
 MLASCALL
 MlasGemmPackBSize(
@@ -610,8 +653,26 @@ MlasGemmPackB(
     const uint8_t* B,
     size_t ldb,
     bool BIsSigned,
-    void* PackedB
+    void* PackedB,
+    MLAS_THREADPOOL* ThreadPool = nullptr
     );
+
+
+void MLASCALL
+MlasGemmPackAandB(
+    size_t M,
+    size_t N,
+    size_t K,
+    const uint8_t* A,
+    size_t lda,
+    void* PackedA,
+    const uint8_t* B,
+    bool BIsSigned,
+    size_t ldb,
+    void * PackedB,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
 
 //
 // Convolution routines.
