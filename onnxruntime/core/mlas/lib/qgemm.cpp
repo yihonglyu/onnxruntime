@@ -569,8 +569,7 @@ Return Value:
         (Shape->N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
     const int32_t* PackedColumnSumBuffer = nullptr;
     const typename KernelType::PackedBType* PackedB = nullptr;
-    const std::atomic<PackingStatus>* PackStatus;
-    MlasGetSumValBufFromPacked(Data->B, Shape->N, PackedColumnSumBuffer, PackStatus, PackedB);
+    MlasGetSumValBufFromPacked(Data->B, Shape->N, PackedColumnSumBuffer, PackedB);
     PackedColumnSumBuffer += RangeStartN;
 
     //
@@ -741,6 +740,9 @@ MlasGemmU8X8CopyPackBThreaded(
     void* PackedBBuf
     );
 
+constexpr uint64_t PackStatusNotStarted = 0x7FFFFFFF7FFFFFFF;
+constexpr uint64_t PackStatusInProgress = 0x7FFFFFFE7FFFFFFE;
+
 template <typename KernelType>
 bool
 TryPackA(
@@ -759,38 +761,37 @@ TryPackA(
 
     int32_t* PackedRowSumBuffer;
     typename KernelType::PackedAType* PackedA;
-    std::atomic<PackingStatus>* PackStatusA;
     MlasGetSumValBufFromPackedMutable<typename KernelType::PackedAType>(
-        Data->PackedA, Shape->M, PackedRowSumBuffer, PackStatusA, PackedA);
+        Data->PackedA, Shape->M, PackedRowSumBuffer, PackedA);
 
-    // at most one status indicator per 16 rows
-    // we just ignore some indicators when strides are bigger than 16
-    std::atomic<PackingStatus>& status =
-        PackStatusA[(RangeStartM / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 8];
+    std::atomic<uint64_t>& status = *((std::atomic<uint64_t>*)(PackedRowSumBuffer + RangeStartM));
 
-    if (status.load(std::memory_order_relaxed) == PackingStatus::kFinished) {
-        // Another thread already packed this block.
-        return true; 
+    uint64_t StatusVal = status.load(std::memory_order_relaxed);
+    if (StatusVal == PackStatusNotStarted) {
+        uint64_t exchanged_status = PackStatusNotStarted;
+        if (status.compare_exchange_strong(exchanged_status, PackStatusInProgress,
+                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
+            // So we successfuly changed the status from not started to in progress.
+            MlasGemmU8X8CopyPackAThreaded<KernelType>(Shape->M, Shape->K, RangeStartM, RangeCountM,
+                                                      Data->A, Data->lda, Data->PackedA);
+            return true;
+        } else if (exchanged_status == PackStatusInProgress) {
+            // Another thread is currently packing this block.
+            return false;
+        } else {
+            // Another thread already packed this block.
+            return true;
+        }
     }
 
-    PackingStatus exchanged_status = PackingStatus::kNotStarted;
-    if (status.compare_exchange_strong(exchanged_status, PackingStatus::kInProgress,
-            std::memory_order_acq_rel, std::memory_order_acquire)) {
-        // In this branch, the status was kNotStarted and we just atomically
-        // changed it to kInProgress as we are about to handle the packing
-        // ourselves.
-        MlasGemmU8X8CopyPackAThreaded<KernelType>(
-            Shape->M, Shape->K, RangeStartM, RangeCountM, Data->A, Data->lda, Data->PackedA);
-
-        status.store(PackingStatus::kFinished, std::memory_order_release);
-        return true;
-    } else if (exchanged_status == PackingStatus::kInProgress) {
-        // Another thread is currently packing this block.
-        return false;
-    } else {
-        // Another thread already packed this block.
-        return true; 
+    if (StatusVal == PackStatusInProgress) {
+        if (status.load(std::memory_order_acquire) == PackStatusInProgress) {
+            return false;
+        }
     }
+
+    // Another thread already packed this block.
+    return true;
 }
 
 template <typename  KernelType>
@@ -809,38 +810,38 @@ TryPackB(const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
 
     int32_t* PackedColSumBuffer;
     typename KernelType::PackedAType* PackedB;
-    std::atomic<PackingStatus>* PackStatusB;
     MlasGetSumValBufFromPackedMutable<typename KernelType::PackedAType>(
-        Data->PackedB, Shape->N, PackedColSumBuffer, PackStatusB, PackedB);
+        Data->PackedB, Shape->N, PackedColSumBuffer, PackedB);
 
-    // at most one status indicator per 16 col
-    // we just ignore some indicators when strides are bigger than 16
-    std::atomic<PackingStatus>& status =
-        PackStatusB[(RangeStartN / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 8];
-    if (status.load(std::memory_order_relaxed) == PackingStatus::kFinished) {
-        // Another thread already packed this block.
-        return true;
+    std::atomic<uint64_t>& status = *((std::atomic<uint64_t>*)(PackedColSumBuffer + RangeStartN));
+    uint64_t StatusVal = status.load(std::memory_order_relaxed);
+    if (StatusVal == PackStatusNotStarted) {
+        uint64_t exchanged_status = PackStatusNotStarted;
+        if (status.compare_exchange_strong(exchanged_status, PackStatusInProgress,
+            std::memory_order_acq_rel, std::memory_order_acquire)) {
+            // So we successfuly changed the status from not started to in progress.
+            MlasGemmU8X8CopyPackBThreaded<KernelType>(Shape->N, Shape->K, RangeStartN, RangeCountN,
+                                                      (uint8_t*)Data->B, Data->ldb,
+                                                      Shape->BIsSigned, Data->PackedB);
+
+            return true;
+        } else if (exchanged_status == PackStatusInProgress) {
+            // Another thread is currently packing this block.
+            return false;
+        } else {
+            // Another thread already packed this block.
+            return true;
+        }
     }
 
-    PackingStatus exchanged_status = PackingStatus::kNotStarted;
-    if (status.compare_exchange_strong(exchanged_status, PackingStatus::kInProgress,
-                                       std::memory_order_acq_rel, std::memory_order_acquire)) {
-        // In this branch, the status was kNotStarted and we just atomically
-        // changed it to kInProgress as we are about to handle the packing
-        // ourselves.
-        MlasGemmU8X8CopyPackBThreaded<KernelType>(
-            Shape->N, Shape->K, RangeStartN, RangeCountN, (uint8_t*)Data->B, Data->ldb,
-            Shape->BIsSigned, Data->PackedB);
-
-        status.store(PackingStatus::kFinished, std::memory_order_release);
-        return true;
-    } else if (exchanged_status == PackingStatus::kInProgress) {
-        // Another thread is currently packing this block.
-        return false;
-    } else {
-        // Another thread already packed this block.
-        return true;
+    if (StatusVal == PackStatusInProgress) {
+        if (status.load(std::memory_order_acquire) == PackStatusInProgress) {
+            return false;
+        }
     }
+
+    // Another thread already packed this block.
+    return true;
 }
 
 
@@ -950,14 +951,12 @@ MlasGemmU8X8AllPackedOperation(
         (Shape->N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
     const int32_t* PackedColumnSumBuffer = nullptr;
     const typename KernelType::PackedBType* PackedB = nullptr;
-    const std::atomic<PackingStatus>* PackStatusB;
-    MlasGetSumValBufFromPacked(Data->PackedB, Shape->N, PackedColumnSumBuffer, PackStatusB, PackedB);
+    MlasGetSumValBufFromPacked(Data->PackedB, Shape->N, PackedColumnSumBuffer, PackedB);
     PackedColumnSumBuffer += RangeStartN;
 
     const int32_t* PackedRowSumBuffer = nullptr;
     const typename KernelType::PackedAType* PackedA = nullptr;
-    const std::atomic<PackingStatus>* PackStatusA;
-    MlasGetSumValBufFromPacked(Data->PackedA, Shape->M, PackedRowSumBuffer, PackStatusA, PackedA);
+    MlasGetSumValBufFromPacked(Data->PackedA, Shape->M, PackedRowSumBuffer, PackedA);
     PackedRowSumBuffer += RangeStartM;
 
     //
@@ -1118,14 +1117,13 @@ MlasGemmPackASizeT(size_t M, size_t K)
     PackedT* BufStartPtr = reinterpret_cast<PackedT*>(0);
     int32_t* RowSums;
     PackedT* PackedPtr;
-    std::atomic<PackingStatus>* PackStatus;
-    MlasGetSumValBufFromPackedMutable<PackedT>(BufStartPtr, M, RowSums, PackStatus, PackedPtr);
+    MlasGetSumValBufFromPackedMutable<PackedT>(BufStartPtr, M, RowSums, PackedPtr);
     size_t RowSumSize = reinterpret_cast<size_t>(PackedPtr)
         - reinterpret_cast<size_t>(BufStartPtr);
 
     //
     // compute the packed matrix size
-    constexpr size_t PK = typename KernelType::PackedK;
+    constexpr size_t PK = KernelType::PackedK;
     const size_t AlignedK = (K + PK - 1) & ~(PK - 1);
     size_t PackedDataSize = M * AlignedK * sizeof(PackedT);
 
@@ -1139,9 +1137,6 @@ MlasGemmPackASizeT(size_t M, size_t K)
 
 /**
  * @brief A single threaded job for pre-packing A
- * 
- * TODO!! this code is exactly the same with MlasGemmU8X8QuantizePackAThreaded
- * except for the call site of pack kernel! Is there a way to merge these two?
  * 
  * @tparam KernelType 
  * 
@@ -1168,13 +1163,19 @@ MlasGemmU8X8CopyPackAThreaded(
     //
     // Locate the row sums and packed values position
     //
-    int32_t* PackedRowSumBuffer = nullptr;
-    typename KernelType::PackedAType* PackedA = nullptr;
-    std::atomic<PackingStatus>* PackStatus;
-    MlasGetSumValBufFromPackedMutable(PackedABuf, M, PackedRowSumBuffer, PackStatus, PackedA);
+    int32_t* PackedRowSumBuffer;
+    typename KernelType::PackedAType* PackedA;
+    MlasGetSumValBufFromPackedMutable(PackedABuf, M, PackedRowSumBuffer, PackedA);
+
+    // First couple of row sums are reused for packing status.
+    // We leave the first cache line untouched until the last moment
+    MLAS_DECLSPEC_ALIGN(int32_t FirstLine[16], 64);
+    std::fill_n(FirstLine, 16, 0);
 
     PackedRowSumBuffer += RangeStartM;
-    std::fill_n(PackedRowSumBuffer, RangeCountM, 0);
+    if (RangeCountM > 16) {
+        std::fill_n(PackedRowSumBuffer + 16, RangeCountM - 16, 0);
+    }
 
     A += RangeStartM * lda;
 
@@ -1213,13 +1214,23 @@ MlasGemmU8X8CopyPackAThreaded(
             //
 
             for (size_t mm = 0; mm < StrideM; mm++) {
-                PackedRowSumBuffer[m + mm] += RowSumBuffer[mm];
+                if (m + mm < 16) {
+                    FirstLine[m + mm] += RowSumBuffer[mm];
+                } else {
+                    PackedRowSumBuffer[m + mm] += RowSumBuffer[mm];     
+                }
             }
         }
 
         A += CountK;
         PackedA += M * AlignedK;
     }
+
+    // Row buffers are padded to cacheline align, so a little
+    // overrun here is ok
+    memcpy(PackedRowSumBuffer + 2, FirstLine + 2, 56);
+    auto* StoreDst = reinterpret_cast<std::atomic<uint64_t>*>(PackedRowSumBuffer);
+    StoreDst->store(*((uint64_t*)FirstLine), std::memory_order_release);
 }
 
 
@@ -1246,11 +1257,10 @@ MlasGemmPackBSizeT(
     PackedT* BufStartPtr = reinterpret_cast<uint8_t*>(0);
     int32_t* ColSums;
     PackedT* PackedPtr;
-    std::atomic<PackingStatus>* PackStatus;
-    MlasGetSumValBufFromPackedMutable<PackedT>(BufStartPtr, N, ColSums, PackStatus, PackedPtr);
+    MlasGetSumValBufFromPackedMutable<PackedT>(BufStartPtr, N, ColSums, PackedPtr);
     size_t HeaderSize = reinterpret_cast<size_t>(PackedPtr) - reinterpret_cast<size_t>(BufStartPtr);
 
-    constexpr size_t PK = typename KernelType::PackedK;
+    constexpr size_t PK = KernelType::PackedK;
 
     const size_t AlignedN =
         (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
@@ -1304,14 +1314,20 @@ MlasGemmU8X8CopyPackBThreaded(
     //
     int32_t* PackedColumnSumBuffer;
     typename KernelType::PackedBType* PackedB;
-    std::atomic<PackingStatus>* PackStatus;
-    MlasGetSumValBufFromPackedMutable(PackedBBuf, N, PackedColumnSumBuffer, PackStatus, PackedB);
+    MlasGetSumValBufFromPackedMutable(PackedBBuf, N, PackedColumnSumBuffer, PackedB);
 
     const size_t AlignedN =
         (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
 
+    // First couple of column buffers are reused for packing status.
+    // We leave the first cache line untouched until the last moment
+    MLAS_DECLSPEC_ALIGN(int32_t FirstLine[16], 64);
+    std::fill_n(FirstLine, 16, 0);
+
     PackedColumnSumBuffer += RangeStartN;
-    std::fill_n(PackedColumnSumBuffer, RangeCountN, 0);
+    if (RangeCountN > 16) {
+        std::fill_n(PackedColumnSumBuffer + 16, RangeCountN - 16, 0);
+    }
 
     B += RangeStartN;
 
@@ -1347,13 +1363,23 @@ MlasGemmU8X8CopyPackBThreaded(
             //
 
             for (size_t nn = 0; nn < CountN; nn++) {
-                PackedColumnSumBuffer[n + nn] += ColumnSumBuffer[nn];
+                if (n + nn < 16) {
+                    FirstLine[n + nn] += ColumnSumBuffer[nn];
+                } else {
+                    PackedColumnSumBuffer[n + nn] += ColumnSumBuffer[nn];
+                }
             }
         }
 
         PackedB = (uint8_t*)PackedB + AlignedN * AlignedK;
         B += ldb * CountK;
     }
+
+    // Column buffers are padded to cacheline align, so a little
+    // overrun here is ok
+    memcpy(PackedColumnSumBuffer + 2, FirstLine + 2, 56);
+    auto* StoreDst = reinterpret_cast<std::atomic<uint64_t>*>(PackedColumnSumBuffer);
+    StoreDst->store(*((uint64_t*)FirstLine), std::memory_order_release);
 }
 
 
@@ -3936,19 +3962,20 @@ MlasGemmBatchFixedPartition(
         auto& data = DataParams[batchIdx];
         int32_t* SumBuffer;
         uint8_t* Packed;
-        std::atomic<PackingStatus>* PackStatus;
 
         if (data.A) {
-            MlasGetSumValBufFromPackedMutable<uint8_t>(
-                data.PackedA, M, SumBuffer, PackStatus, Packed);
-            memset(PackStatus, 0,
-                   ((M + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 64);
+            MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedA, M, SumBuffer, Packed);
+            for (size_t m = 0; m < M; m += StrideM) {
+                uint64_t* PackStatus = (uint64_t*)(SumBuffer + m);
+                *PackStatus = PackStatusNotStarted;
+            }
         }
         if (data.B) {
-            MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedB, N, SumBuffer, PackStatus,
-                                                       Packed);
-            memset(PackStatus, 0,
-                   ((N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 64);
+            MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedB, N, SumBuffer, Packed);
+            for (size_t n = 0; n < N; n += StrideN) {
+                uint64_t* PackStatus = (uint64_t*)(SumBuffer + n);
+                *PackStatus = PackStatusNotStarted;
+            }
         }
     }
 

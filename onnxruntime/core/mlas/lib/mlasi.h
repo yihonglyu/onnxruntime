@@ -1839,11 +1839,6 @@ MlasReadTimeStampCounter(void)
 #endif
 }
 
-enum class PackingStatus : std::uint64_t {
-    kNotStarted = 0,  // No thread has started packing this block yet.
-    kInProgress,      // Some thread is currently packing this block.
-    kFinished         // This block has already been packed.
-};
 
 /**
  * @brief For a packed quantized buffer, locate row/col sum buffer and the
@@ -1856,7 +1851,6 @@ enum class PackingStatus : std::uint64_t {
  * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
  * @param [IN]  NumSums     Number of row/col sums needed
  * @param [OUT] SumBuf      Points to the row/col sums buffer
- * @param [OUT] PackStatus  Packing status buffer
  * @param [OUT] ValBuf      Points to the quantized value buffer
  */
 template<typename PackedValType>
@@ -1866,7 +1860,6 @@ MlasGetSumValBufFromPacked(
     const void* PackedBuf,
     const size_t NumSums,
     const int32_t*& SumBuf,
-    const std::atomic<PackingStatus>*& PackStatus,
     const PackedValType*& ValBuf)
 {
     const uint8_t* start = reinterpret_cast<const uint8_t*>(PackedBuf);
@@ -1875,11 +1868,6 @@ MlasGetSumValBufFromPacked(
     SumBuf = reinterpret_cast<const int32_t*>(start);
     size_t headerSize = NumSums * sizeof(int32_t);
     headerSize = (headerSize + 63) & ~(63);
-
-    // one packing status per 16 col/row
-    PackStatus = reinterpret_cast<const std::atomic<PackingStatus>*>(start + headerSize);
-    headerSize +=
-        ((NumSums + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 64;
 
     ValBuf = reinterpret_cast<const PackedValType*>(start + headerSize);
 }
@@ -1896,7 +1884,6 @@ MlasGetSumValBufFromPacked(
  * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
  * @param [IN]  NumSums     Number of row/col sums needed
  * @param [OUT] SumBuf      Points to the row/col sums buffer
- * @param [OUT] PackStatus  Packing status buffer
  * @param [OUT] ValBuf      Points to the quantized value buffer
  */
 template<typename PackedValType>
@@ -1906,7 +1893,6 @@ MlasGetSumValBufFromPackedMutable(
     void* PackedBuf,
     const size_t NumSums,
     int32_t*& SumBuf,
-    std::atomic<PackingStatus>*& PackStatus,
     PackedValType*& ValBuf)
 {
     uint8_t* start = reinterpret_cast<uint8_t*>(PackedBuf);
@@ -1915,11 +1901,6 @@ MlasGetSumValBufFromPackedMutable(
     SumBuf = reinterpret_cast<int32_t*>(start);
     size_t headerSize = NumSums * sizeof(int32_t);
     headerSize = (headerSize + 63) & ~(63);
-
-    // one packing status per 16 col/row
-    PackStatus = reinterpret_cast<std::atomic<PackingStatus>*>(start + headerSize);
-    headerSize +=
-        ((NumSums + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) / MLAS_QGEMM_STRIDEN_THREAD_ALIGN) * 64;
 
     ValBuf = reinterpret_cast<PackedValType*>(start + headerSize);
 }
