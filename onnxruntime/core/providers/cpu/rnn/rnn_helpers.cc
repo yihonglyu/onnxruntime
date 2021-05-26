@@ -292,12 +292,25 @@ void ComputeGemm(const int M,
   gemm_shape.N = static_cast<size_t>(N);
   gemm_shape.K = static_cast<size_t>(K);
   gemm_shape.BIsSigned = b_is_signed;
-  
+
+  //const size_t pack_a_size = MlasGemmPackASize(gemm_shape.M, gemm_shape.K, gemm_shape.BIsSigned);
+  //const size_t pack_b_size = weights.is_prepacked_ ? 0 : MlasGemmPackBSize(gemm_shape.N, gemm_shape.K, gemm_shape.BIsSigned);
+  //uint8_t* gemm_pack_buf = (uint8_t*)allocator->Alloc((SafeInt<size_t>(pack_a_size) + SafeInt<size_t>(pack_b_size)) + 64);
+  //BufferUniquePtr gemm_pack_holder(gemm_pack_buf, BufferDeleter(allocator));
+  //{
+    // align starting address to cache line boundary
+  //  std::ptrdiff_t start = std::ptrdiff_t(gemm_pack_buf);
+  //  start = (start + 63) & ~63;
+  //  gemm_pack_buf = reinterpret_cast<uint8_t*>(start);
+  //}
+
   MLAS_GEMM_U8X8_DATA_PARAMS gemm_params;
   gemm_params.A = quantized_A_buffer;
+  //gemm_params.PackedA = gemm_pack_buf;
   gemm_params.lda = static_cast<size_t>(K);
   gemm_params.ZeroPointA = a_zero_point;
   gemm_params.B = weights.buffer_;
+  //gemm_params.PackedB = (void*)(weights.is_prepacked_ ? weights.buffer_ : gemm_pack_buf + pack_a_size);
   gemm_params.ldb = static_cast<size_t>(N);
   gemm_params.ZeroPointB = &b_zero_point;
   gemm_params.BIsPacked = weights.is_prepacked_;

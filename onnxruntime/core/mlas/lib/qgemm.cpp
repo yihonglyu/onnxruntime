@@ -2364,7 +2364,7 @@ struct MLAS_GEMM_U8S8_KERNEL_AVX2
 
     static constexpr size_t PackedK = 4;
     static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 256, 128};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 384};
+    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 768};
 };
 
 constexpr size_t MLAS_GEMM_U8S8_KERNEL_AVX2::PackedK;

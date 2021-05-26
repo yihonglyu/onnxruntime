@@ -85,13 +85,28 @@ Status QLinearMatMul::Compute(OpKernelContext* ctx) const {
   gemm_shape.K = static_cast<size_t>(helper.K());
   gemm_shape.BIsSigned = b_is_signed;
 
+  // Allocate packing and output buffers
   AllocatorPtr alloc;
   ORT_RETURN_IF_ERROR(ctx->GetTempSpaceAllocator(&alloc));
-  auto gemm_output_data = alloc->Alloc(SafeInt<size_t>(gemm_shape.M) *
-      gemm_shape.N * sizeof(int32_t) * num_gemms);
-  BufferUniquePtr gemm_output_buffer(gemm_output_data, BufferDeleter(alloc));
-  auto* gemm_output = static_cast<int32_t*>(gemm_output_buffer.get());
 
+  const size_t pack_a_size = MlasGemmPackASize(gemm_shape.M, gemm_shape.K, gemm_shape.BIsSigned);
+  const size_t pack_b_size = (nullptr != b) ? MlasGemmPackBSize(gemm_shape.N, gemm_shape.K, gemm_shape.BIsSigned) : 0;
+
+  const size_t pack_buf_size = SafeInt<size_t>(pack_a_size) + pack_b_size;
+  const size_t output_size = SafeInt<size_t>(gemm_shape.M) * gemm_shape.N * sizeof(int32_t);
+
+  uint8_t* gemm_buffers = (uint8_t*)alloc->Alloc(
+      SafeInt<size_t>(pack_buf_size) * num_gemms
+      + SafeInt<size_t>(output_size) * num_gemms
+      + 64);
+  BufferUniquePtr gemm_buf_holder(gemm_buffers, BufferDeleter(alloc));
+
+  // align starting address to cache line boundary
+  std::ptrdiff_t start = std::ptrdiff_t(gemm_buffers);
+  start = (start + 63) & ~63;
+  uint8_t* gemm_pack_buf = (uint8_t*)start;
+  start += SafeInt<size_t>(pack_buf_size) * num_gemms;
+  int32_t* gemm_output = (int32_t*)start; 
 
   std::vector<MLAS_GEMM_U8X8_DATA_PARAMS> gemm_params(num_gemms);
   std::vector<MLAS_QGEMM_REQUANT_OUTPUT_PROCESSOR> requant_procs;
@@ -100,10 +115,12 @@ Status QLinearMatMul::Compute(OpKernelContext* ctx) const {
   auto b_zp_data = static_cast<const uint8_t*>(b_offset->DataRaw());
   for (size_t i = 0; i < num_gemms; i++) {
     gemm_params[i].A = a->template Data<uint8_t>() + helper.LeftOffsets()[i];
+    gemm_params[i].PackedA = gemm_pack_buf + pack_buf_size * i;
     gemm_params[i].lda = gemm_shape.K;
     gemm_params[i].ZeroPointA = *a_offset->template Data<uint8_t>();
 
-    gemm_params[i].B = b_data + helper.RightOffsets()[i];
+    gemm_params[i].B = (nullptr != b) ? (b_data + helper.RightOffsets()[i]) : nullptr;
+    gemm_params[i].PackedB = (nullptr != b) ? (gemm_pack_buf + pack_buf_size * i + pack_a_size) : (void*)(b_data + helper.RightOffsets()[i]);
     gemm_params[i].ldb = gemm_shape.N;
     gemm_params[i].BIsPacked = bool(packed_b_);
     gemm_params[i].ZeroPointB = b_zp_data + helper.RightZeroPointOffsets()[i];
@@ -120,6 +137,7 @@ Status QLinearMatMul::Compute(OpKernelContext* ctx) const {
                                output_scales.size() > 1,
                                *y_offset->template Data<uint8_t>());
     gemm_params[i].OutputProcessor = &(requant_procs[i]);
+
   }
 
   MlasGemmBatch(gemm_shape, gemm_params.data(), num_gemms, ctx->GetOperatorThreadPool());

@@ -394,9 +394,5 @@ Return Value:
 
 --*/
 {
-#if defined(MLAS_TARGET_AMD64)
-    return MlasPlatform.PreferredBufferAlignment;
-#else
-    return MLAS_DEFAULT_PREFERRED_BUFFER_ALIGNMENT;
-#endif
+    return 64;
 }

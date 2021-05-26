@@ -119,10 +119,24 @@ Status MatMulIntegerToFloatBase::ComputeCommon(OpKernelContext* ctx,
   gemm_shape.K = static_cast<size_t>(helper.K());
   gemm_shape.BIsSigned = b_tensor ? b_tensor->IsDataType<int8_t>() : b_is_signed_;
 
+  const size_t pack_a_size = MlasGemmPackASize(gemm_shape.M, gemm_shape.K, gemm_shape.BIsSigned);
+  const size_t pack_b_size = b_tensor ? MlasGemmPackBSize(gemm_shape.N, gemm_shape.K, gemm_shape.BIsSigned) : 0;
+
   const size_t num_gemms = helper.OutputOffsets().size();
   std::vector<MLAS_QGEMM_SCALE_BIAS_OUTPUT_PROCESSOR> gemm_scale_procs;
   gemm_scale_procs.reserve(num_gemms);
   std::vector<MLAS_GEMM_U8X8_DATA_PARAMS> gemm_data_vec(num_gemms);
+
+  AllocatorPtr allocator;
+  ORT_RETURN_IF_ERROR(ctx->GetTempSpaceAllocator(&allocator));
+  uint8_t* gemm_pack_buf = (uint8_t*)allocator->Alloc((SafeInt<size_t>(pack_a_size) + SafeInt<size_t>(pack_b_size)) * num_gemms + 64);
+  BufferUniquePtr gemm_pack_holder(gemm_pack_buf, BufferDeleter(allocator));
+  {
+    // align starting address to cache line boundary
+    std::ptrdiff_t start = std::ptrdiff_t(gemm_pack_buf);
+    start = (start + 63) & ~63;
+    gemm_pack_buf = reinterpret_cast<uint8_t*>(start);
+  }
 
   for (size_t gemm_idx = 0; gemm_idx < num_gemms; gemm_idx++) {
     gemm_scale_procs.emplace_back(y_data + helper.OutputOffsets()[gemm_idx],
@@ -134,10 +148,16 @@ Status MatMulIntegerToFloatBase::ComputeCommon(OpKernelContext* ctx,
     auto& params = gemm_data_vec[gemm_idx];
     params.OutputProcessor = &(gemm_scale_procs[gemm_idx]);
     params.A = a_data + helper.LeftOffsets()[gemm_idx];
+    params.PackedA = gemm_pack_buf + (pack_a_size + pack_b_size) * gemm_idx;
     params.lda = gemm_shape.K;
     params.ZeroPointA = a_zp;
     params.BIsPacked = bool(packed_b_);
-    params.B = b_tensor ? static_cast<const uint8_t*>(b_tensor->DataRaw()) + helper.RightOffsets()[gemm_idx] : packed_b_.get();
+    params.B = b_tensor ? 
+        (static_cast<const uint8_t*>(b_tensor->DataRaw()) + helper.RightOffsets()[gemm_idx])
+        : nullptr;
+    params.PackedB = b_tensor ?
+        (gemm_pack_buf + (pack_a_size + pack_b_size) * gemm_idx + pack_a_size)
+        : packed_b_.get();
     params.ldb = gemm_shape.N;
     params.ZeroPointB = b_zp_ptr + helper.RightZeroPointOffsets()[gemm_idx];
     params.PerColumnZeroPoints = is_b_zp_per_column;

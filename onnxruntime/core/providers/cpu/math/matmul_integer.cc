@@ -3,6 +3,7 @@
 
 #include "matmul_integer_base.h"
 
+#include "core/common/safeint.h"
 #include "core/providers/cpu/math/matmul_helper.h"
 #include "core/util/math_cpuonly.h"
 #include "core/util/qmath.h"
@@ -91,8 +92,22 @@ Status MatMulInteger::Compute(OpKernelContext* ctx) const {
   gemm_shape.K = static_cast<size_t>(helper.K());
   gemm_shape.BIsSigned = b_is_signed;
 
+  const size_t pack_a_size = MlasGemmPackASize(gemm_shape.M, gemm_shape.K, gemm_shape.BIsSigned);
+  const size_t pack_b_size = b ? MlasGemmPackBSize(gemm_shape.N, gemm_shape.K, gemm_shape.BIsSigned) : 0;
+
   const size_t batch_size = helper.OutputOffsets().size();
   std::vector<MLAS_GEMM_U8X8_DATA_PARAMS> gemm_data_vec(batch_size);
+
+  AllocatorPtr allocator;
+  ORT_RETURN_IF_ERROR(ctx->GetTempSpaceAllocator(&allocator));
+  uint8_t* gemm_pack_buf = (uint8_t*)allocator->Alloc((SafeInt<size_t>(pack_a_size) + SafeInt<size_t>(pack_b_size)) * batch_size + 64);
+  BufferUniquePtr gemm_pack_holder(gemm_pack_buf, BufferDeleter(allocator));
+  {
+    // align starting address to cache line boundary
+    std::ptrdiff_t start = std::ptrdiff_t(gemm_pack_buf);
+    start = (start + 63) & ~63;
+    gemm_pack_buf = reinterpret_cast<uint8_t*>(start);
+  }
 
   for (size_t batch = 0; batch < batch_size; batch++) {
     auto& gemm_params = gemm_data_vec[batch];
@@ -104,7 +119,9 @@ Status MatMulInteger::Compute(OpKernelContext* ctx) const {
     gemm_params.ldc = gemm_shape.N;
     gemm_params.BIsPacked = bool(packed_b_);
     gemm_params.A = a_data + helper.LeftOffsets()[batch];
-    gemm_params.B = b_data + helper.RightOffsets()[batch];
+    gemm_params.PackedA = gemm_pack_buf + (pack_a_size + pack_b_size) * batch;
+    gemm_params.B = b ?  (b_data + helper.RightOffsets()[batch]) : nullptr;
+    gemm_params.PackedB = b ? (gemm_pack_buf + (pack_a_size + pack_b_size) * batch + pack_a_size) : (void*)(b_data + helper.RightOffsets()[batch]);
     gemm_params.C = y_data + helper.OutputOffsets()[batch];
   }
   MlasGemmBatch(gemm_shape, gemm_data_vec.data(), batch_size, ctx->GetOperatorThreadPool());

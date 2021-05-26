@@ -111,6 +111,20 @@ Status ConvInteger::Compute(OpKernelContext* context) const {
   const auto* Wdata = W->template Data<uint8_t>();
   auto* Ydata = Y->template MutableData<int32_t>();
 
+  const size_t pack_a_size = MlasGemmPackASize(static_cast<size_t>(M / conv_attrs_.group), static_cast<size_t>(kernel_dim), false);
+  const size_t pack_b_size = MlasGemmPackBSize(static_cast<size_t>(output_image_size), static_cast<size_t>(kernel_dim), false);
+
+  AllocatorPtr allocator;
+  ORT_RETURN_IF_ERROR(context->GetTempSpaceAllocator(&allocator));
+  uint8_t* gemm_pack_buf = (uint8_t*)allocator->Alloc((SafeInt<size_t>(pack_a_size) + SafeInt<size_t>(pack_b_size)) + 64);
+  BufferUniquePtr gemm_pack_holder(gemm_pack_buf, BufferDeleter(allocator));
+  {
+    // align starting address to cache line boundary
+    std::ptrdiff_t start = std::ptrdiff_t(gemm_pack_buf);
+    start = (start + 63) & ~63;
+    gemm_pack_buf = reinterpret_cast<uint8_t*>(start);
+  }
+
   for (int image_id = 0; image_id < N; ++image_id) {
     for (int group_id = 0; group_id < conv_attrs_.group; ++group_id) {
       if (col_buffer_data != nullptr) {
@@ -156,9 +170,11 @@ Status ConvInteger::Compute(OpKernelContext* context) const {
       
       MLAS_GEMM_U8X8_DATA_PARAMS gemm_params;
       gemm_params.A = Wdata + group_id * W_offset;
+      gemm_params.PackedA = gemm_pack_buf;
       gemm_params.lda = static_cast<size_t>(kernel_dim);
       gemm_params.ZeroPointA = filter_offset;
-      gemm_params.B = (col_buffer_data == nullptr) ? Xdata : col_buffer_data,
+      gemm_params.B = (col_buffer_data == nullptr) ? Xdata : col_buffer_data;
+      gemm_params.PackedB = gemm_pack_buf + pack_a_size;
       gemm_params.ldb = static_cast<size_t>(output_image_size);
       gemm_params.ZeroPointB = &input_offset;
       gemm_params.C = Ydata;

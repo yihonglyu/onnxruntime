@@ -232,6 +232,17 @@ Status QAttention<T>::Compute(OpKernelContext* context) const {
     gemm_shape.K = input_hidden_size;
     gemm_shape.BIsSigned = weights_is_signed;
 
+    const size_t pack_a_size = MlasGemmPackASize(gemm_shape.M, gemm_shape.K, gemm_shape.BIsSigned);
+    const size_t pack_b_size = packed_weights_ ? 0 : MlasGemmPackBSize(gemm_shape.N, gemm_shape.K, gemm_shape.BIsSigned);
+    uint8_t* gemm_pack_buf = (uint8_t*)allocator->Alloc((SafeInt<size_t>(pack_a_size) + SafeInt<size_t>(pack_b_size)) * loop_len + 64);
+    BufferUniquePtr gemm_pack_holder(gemm_pack_buf, BufferDeleter(allocator));
+    {
+      // align starting address to cache line boundary
+      std::ptrdiff_t start = std::ptrdiff_t(gemm_pack_buf);
+      start = (start + 63) & ~63;
+      gemm_pack_buf = reinterpret_cast<uint8_t*>(start);
+    }
+
     std::vector<MLAS_GEMM_U8X8_DATA_PARAMS> gemm_data_vec(loop_len);
     std::vector<MLAS_QGEMM_SCALE_BIAS_OUTPUT_PROCESSOR> scale_bias_procs;
     scale_bias_procs.reserve(loop_len);
@@ -264,14 +275,17 @@ Status QAttention<T>::Compute(OpKernelContext* context) const {
       gemm_params.A = input_data + input_offset;
       gemm_params.lda = input_hidden_size;
       gemm_params.ZeroPointA = input_zero_point;
+      gemm_params.PackedA = gemm_pack_buf + (pack_a_size + pack_b_size) * i;
       if (packed_weights_) {
-        const auto* packed_weight =
-            static_cast<const uint8_t*>(packed_weights_.get()) + packed_weights_size_ * (weights_offset / head_size);
-        gemm_params.B = packed_weight;
+        auto* packed_weight =
+            static_cast<uint8_t*>(packed_weights_.get()) + packed_weights_size_ * (weights_offset / head_size);
+        gemm_params.PackedB = (void*)packed_weight;
+        gemm_params.B = nullptr;
         gemm_params.BIsPacked = true;
       } else {
         gemm_params.B = weights_data + weights_offset;
         gemm_params.ldb = 3 * hidden_size;
+        gemm_params.PackedB = gemm_pack_buf + (pack_a_size + pack_b_size) * i + pack_a_size;
       }
       gemm_params.ZeroPointB = nullptr != weight_zp_data ? weight_zp_data + weights_zp_offset : &weight_zp_default;
       gemm_params.PerColumnZeroPoints = is_weight_zp_per_column;
