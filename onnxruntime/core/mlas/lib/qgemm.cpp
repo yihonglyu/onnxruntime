@@ -32,6 +32,30 @@ void
     const size_t RangeCountN
     );
 
+//
+// Define the default striding parameters used for the quantized integer
+// matrix/matrix multiply operation.
+//
+
+struct MLAS_GEMM_U8X8_STRIDES {
+    size_t M;
+    size_t N;
+    size_t K;
+};
+
+
+typedef
+void
+(MLAS_GEMM_U8X8_PACKALL_OPERATION)(
+    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
+    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
+    const MLAS_GEMM_U8X8_STRIDES& Strides,
+    const size_t RangeStartM,
+    const size_t RangeCountM,
+    const size_t RangeStartN,
+    const size_t RangeCountN
+    );
+
 typedef
 void
 (MLAS_GEMM_U8X8_COPY_PACKB_THD_ROUTINE)(
@@ -78,7 +102,7 @@ void
 struct MLAS_GEMM_U8X8_DISPATCH {
     MLAS_GEMM_U8X8_OPERATION* Operation;
     MLAS_GEMM_U8X8_OPERATION* PackedOperation;
-    MLAS_GEMM_U8X8_OPERATION* AllPackedOperation;
+    MLAS_GEMM_U8X8_PACKALL_OPERATION* AllPackedOperation;
     size_t PackedK;
     size_t PackedStrideK;
 
@@ -126,17 +150,6 @@ MlasGemmU8X8GetDispatch(
 struct MLAS_GEMM_U8X8_WORK_BLOCK {
     ptrdiff_t ThreadCountM;
     ptrdiff_t ThreadCountN;
-};
-
-//
-// Define the default striding parameters used for the quantized integer
-// matrix/matrix multiply operation.
-//
-
-struct MLAS_GEMM_U8X8_STRIDES {
-    size_t M;
-    size_t N;
-    size_t K;
 };
 
 void
@@ -904,6 +917,7 @@ void
 MlasGemmU8X8AllPackedOperation(
     const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
     const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
+    const MLAS_GEMM_U8X8_STRIDES& Strides,
     size_t RangeStartM,
     size_t RangeCountM,
     size_t RangeStartN,
@@ -916,12 +930,9 @@ MlasGemmU8X8AllPackedOperation(
     RangeCountM = std::min(RangeCountM, Shape->M - RangeStartM);
     RangeCountN = std::min(RangeCountN, Shape->N - RangeStartN);
 
-
-    constexpr MLAS_GEMM_U8X8_STRIDES Strides = KernelType::PackedStrides;
-
-    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[Strides.M], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[Strides.N], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[Strides.N], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[1024], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[1024], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[1024], 64);
 
     const size_t K = Shape->K;
 
@@ -2364,7 +2375,7 @@ struct MLAS_GEMM_U8S8_KERNEL_AVX2
 
     static constexpr size_t PackedK = 4;
     static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 256, 128};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 768};
+    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 512};
 };
 
 constexpr size_t MLAS_GEMM_U8S8_KERNEL_AVX2::PackedK;
@@ -2481,7 +2492,7 @@ struct MLAS_GEMM_U8U8_KERNEL_AVX2
 
     static constexpr size_t PackedK = 2;
     static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 256, 128};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 384};
+    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 512};
 };
 
 constexpr size_t MLAS_GEMM_U8U8_KERNEL_AVX2::PackedK;
@@ -3923,7 +3934,7 @@ MlasGemmBatchFixedPartition(
     const size_t K = Shape.K;
 
     const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(Shape.BIsSigned);
-    MLAS_GEMM_U8X8_OPERATION* GemmU8X8Operation = GemmU8X8Dispatch->AllPackedOperation;
+    MLAS_GEMM_U8X8_PACKALL_OPERATION* GemmU8X8Operation = GemmU8X8Dispatch->AllPackedOperation;
 
     constexpr size_t unitwork = 2097152;
     //
@@ -3934,14 +3945,14 @@ MlasGemmBatchFixedPartition(
     // packing status buffer space in the packing buffer. So the jobs
     // will be very big if K is very big. 
     //
-    size_t StrideN = MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
-    size_t StrideM = MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
+    size_t StrideN = 16;
+    size_t StrideM = 48;
 
     size_t multipler = unitwork / (StrideM * StrideN * K);
     multipler = std::max(multipler, size_t(1));
 
     StrideN *= multipler;
-    if (StrideN > (N - (N / 4))) {
+    if (StrideN >= (N - (N / 4))) {
         StrideN = N;
     }
 
@@ -3949,7 +3960,7 @@ MlasGemmBatchFixedPartition(
     multipler = std::max(multipler, size_t(1));
 
     StrideM *= multipler;
-    if (StrideM > (M - (M / 4))) {
+    if (StrideM >= (M - (M / 4))) {
         StrideM = M;
     }
 
@@ -3979,14 +3990,39 @@ MlasGemmBatchFixedPartition(
         }
     }
 
+    constexpr size_t CacheSize = 256 * 1024;
+    constexpr size_t BPanelSize = CacheSize / 2;
+    constexpr size_t AllPanelSize = CacheSize * 3 / 4;
+
+    MLAS_GEMM_U8X8_STRIDES Strides;
+    Strides.K = std::min(K, GemmU8X8Dispatch->PackedStrideK);
+
+    // try to find a shape for panel B that fill half cache
+    size_t BStrideLimit = std::min(size_t(1024), BPanelSize / Strides.K);
+    if (BStrideLimit >= StrideN) {
+        Strides.N = StrideN;
+    } else {
+        Strides.N = BStrideLimit & ~15;
+    }
+
+    size_t AStrideLimit = std::min(size_t(1024), (AllPanelSize - Strides.N * Strides.K) / Strides.K );
+    if (!Shape.BIsSigned) {
+        AStrideLimit /= 2;
+    }
+    if (AStrideLimit >= StrideM) {
+        Strides.M = StrideM;
+    } else {
+        Strides.M = AStrideLimit - (AStrideLimit % 48);
+    }
+
     MlasTrySimpleParallel(ThreadPool, BatchN * NumJobPerGemm, [&](ptrdiff_t tid) {
-        const auto gemm_i = tid % BatchN;
-        const auto blk_i = tid / BatchN;
+        const auto gemm_i = tid / NumJobPerGemm;
+        const auto blk_i = tid % NumJobPerGemm;
 
         const auto m_idx = blk_i % numJobM;
         const auto n_idx = blk_i / numJobM; 
         
-        GemmU8X8Operation(&Shape, &(DataParams[gemm_i]), m_idx * StrideM, StrideM,
+        GemmU8X8Operation(&Shape, &(DataParams[gemm_i]), Strides, m_idx * StrideM, StrideM,
             n_idx * StrideN, StrideN);
     });
 }
