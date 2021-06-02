@@ -66,7 +66,8 @@ void
     const uint8_t* B,
     size_t ldb,
     bool BIsSigned,
-    void* PackedBBuf
+    void* PackedBBuf,
+    bool SingleThreaded
     );
 
 typedef
@@ -95,7 +96,8 @@ void
     size_t RangeCountM,
     const uint8_t* A,
     size_t lda,
-    void* PackedABuf
+    void* PackedABuf,
+    bool SingleThreaded
     );
 
 
@@ -737,7 +739,8 @@ MlasGemmU8X8CopyPackAThreaded(
     size_t RangeCountM,
     const uint8_t* A,
     size_t lda,
-    void* PackedABuf
+    void* PackedABuf,
+    bool SingleThreaded
     );
 
 template<typename KernelType>
@@ -750,7 +753,8 @@ MlasGemmU8X8CopyPackBThreaded(
     const uint8_t* B,
     size_t ldb,
     bool BIsSigned,
-    void* PackedBBuf
+    void* PackedBBuf,
+    bool SingleThreaded
     );
 
 constexpr uint64_t PackStatusNotStarted = 0x7FFFFFFF7FFFFFFF;
@@ -762,7 +766,8 @@ TryPackA(
     const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
     const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
     size_t RangeStartM,
-    size_t RangeCountM
+    size_t RangeCountM,
+    bool SingleThreaded
    )
 {
     if (nullptr == Data->A) {
@@ -777,6 +782,15 @@ TryPackA(
     MlasGetSumValBufFromPackedMutable<typename KernelType::PackedAType>(
         Data->PackedA, Shape->M, PackedRowSumBuffer, PackedA);
 
+    if (SingleThreaded) {
+        uint64_t& status = *((uint64_t*)(PackedRowSumBuffer + RangeStartM));
+        if (status == PackStatusNotStarted) {
+            MlasGemmU8X8CopyPackAThreaded<KernelType>(Shape->M, Shape->K, RangeStartM, RangeCountM,
+                                                      Data->A, Data->lda, Data->PackedA, SingleThreaded);
+        }
+        return true;
+    }
+
     std::atomic<uint64_t>& status = *((std::atomic<uint64_t>*)(PackedRowSumBuffer + RangeStartM));
 
     uint64_t StatusVal = status.load(std::memory_order_relaxed);
@@ -786,7 +800,8 @@ TryPackA(
                                            std::memory_order_acq_rel, std::memory_order_acquire)) {
             // So we successfuly changed the status from not started to in progress.
             MlasGemmU8X8CopyPackAThreaded<KernelType>(Shape->M, Shape->K, RangeStartM, RangeCountM,
-                                                      Data->A, Data->lda, Data->PackedA);
+                                                      Data->A, Data->lda, Data->PackedA,
+                                                      SingleThreaded);
             return true;
         } else if (exchanged_status == PackStatusInProgress) {
             // Another thread is currently packing this block.
@@ -809,10 +824,13 @@ TryPackA(
 
 template <typename  KernelType>
 bool
-TryPackB(const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
-         const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-         size_t RangeStartN,
-         size_t RangeCountN)
+TryPackB(
+    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
+    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
+    size_t RangeStartN,
+    size_t RangeCountN,
+    bool SingleThreaded
+    )
 {
     if (nullptr == Data->B) {
         // client indicating B is already packed
@@ -826,6 +844,16 @@ TryPackB(const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
     MlasGetSumValBufFromPackedMutable<typename KernelType::PackedAType>(
         Data->PackedB, Shape->N, PackedColSumBuffer, PackedB);
 
+    if (SingleThreaded) {
+        uint64_t& status = *((uint64_t*)(PackedColSumBuffer + RangeStartN));
+        if (status == PackStatusNotStarted) {
+            MlasGemmU8X8CopyPackBThreaded<KernelType>(Shape->N, Shape->K, RangeStartN, RangeCountN,
+                                                      (uint8_t*)Data->B, Data->ldb,
+                Shape->BIsSigned, Data->PackedB, SingleThreaded);
+        }
+        return true;
+    }
+
     std::atomic<uint64_t>& status = *((std::atomic<uint64_t>*)(PackedColSumBuffer + RangeStartN));
     uint64_t StatusVal = status.load(std::memory_order_relaxed);
     if (StatusVal == PackStatusNotStarted) {
@@ -835,7 +863,7 @@ TryPackB(const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
             // So we successfuly changed the status from not started to in progress.
             MlasGemmU8X8CopyPackBThreaded<KernelType>(Shape->N, Shape->K, RangeStartN, RangeCountN,
                                                       (uint8_t*)Data->B, Data->ldb,
-                                                      Shape->BIsSigned, Data->PackedB);
+                Shape->BIsSigned, Data->PackedB, SingleThreaded);
 
             return true;
         } else if (exchanged_status == PackStatusInProgress) {
@@ -872,6 +900,8 @@ EnsurePacked(
     bool Apacked = false;
     bool Bpacked = false;
 
+    bool SingleThreaded = RangeCountM == Shape->M && RangeCountN == Shape->N;
+
     // variables for look ahead packing
     //size_t nextM = RangeStartM;
     //size_t nextN = RangeStartN;
@@ -879,10 +909,10 @@ EnsurePacked(
 
     while (true) {
         if (!Apacked) {
-            Apacked = TryPackA<KernelType>(Shape, Data, RangeStartM, RangeCountM);
+            Apacked = TryPackA<KernelType>(Shape, Data, RangeStartM, RangeCountM, SingleThreaded);
         }
         if (!Bpacked) {
-            Bpacked = TryPackB<KernelType>(Shape, Data, RangeStartN, RangeCountN);
+            Bpacked = TryPackB<KernelType>(Shape, Data, RangeStartN, RangeCountN, SingleThreaded);
         }
         if (Apacked && Bpacked) {
             // mission acomplished.
@@ -1168,7 +1198,8 @@ MlasGemmU8X8CopyPackAThreaded(
     size_t RangeCountM,
     const uint8_t* A,
     size_t lda,
-    void* PackedABuf
+    void* PackedABuf,
+    bool SingleThreaded
     )
 {
     //
@@ -1181,11 +1212,17 @@ MlasGemmU8X8CopyPackAThreaded(
     // First couple of row sums are reused for packing status.
     // We leave the first cache line untouched until the last moment
     MLAS_DECLSPEC_ALIGN(int32_t FirstLine[16], 64);
-    std::fill_n(FirstLine, 16, 0);
+    if (!SingleThreaded) {
+        std::fill_n(FirstLine, 16, 0);
+    }
 
     PackedRowSumBuffer += RangeStartM;
-    if (RangeCountM > 16) {
-        std::fill_n(PackedRowSumBuffer + 16, RangeCountM - 16, 0);
+    if (!SingleThreaded) {
+        if (RangeCountM > 16) {
+            std::fill_n(PackedRowSumBuffer + 16, RangeCountM - 16, 0);
+        }
+    } else {
+        std::fill_n(PackedRowSumBuffer, RangeCountM, 0);
     }
 
     A += RangeStartM * lda;
@@ -1225,7 +1262,7 @@ MlasGemmU8X8CopyPackAThreaded(
             //
 
             for (size_t mm = 0; mm < StrideM; mm++) {
-                if (m + mm < 16) {
+                if (!SingleThreaded && m + mm < 16) {
                     FirstLine[m + mm] += RowSumBuffer[mm];
                 } else {
                     PackedRowSumBuffer[m + mm] += RowSumBuffer[mm];     
@@ -1236,12 +1273,13 @@ MlasGemmU8X8CopyPackAThreaded(
         A += CountK;
         PackedA += M * AlignedK;
     }
-
-    // Row buffers are padded to cacheline align, so a little
-    // overrun here is ok
-    memcpy(PackedRowSumBuffer + 2, FirstLine + 2, 56);
-    auto* StoreDst = reinterpret_cast<std::atomic<uint64_t>*>(PackedRowSumBuffer);
-    StoreDst->store(*((uint64_t*)FirstLine), std::memory_order_release);
+    if (!SingleThreaded) {
+        // Row buffers are padded to cacheline align, so a little
+        // overrun here is ok
+        memcpy(PackedRowSumBuffer + 2, FirstLine + 2, 56);
+        auto* StoreDst = reinterpret_cast<std::atomic<uint64_t>*>(PackedRowSumBuffer);
+        StoreDst->store(*((uint64_t*)FirstLine), std::memory_order_release);
+    }
 }
 
 
@@ -1310,7 +1348,8 @@ MlasGemmU8X8CopyPackBThreaded(
     const uint8_t* B,
     size_t ldb,
     bool BIsSigned,
-    void* PackedBBuf
+    void* PackedBBuf,
+    bool SingleThreaded
     )
 {
     //
@@ -1333,11 +1372,17 @@ MlasGemmU8X8CopyPackBThreaded(
     // First couple of column buffers are reused for packing status.
     // We leave the first cache line untouched until the last moment
     MLAS_DECLSPEC_ALIGN(int32_t FirstLine[16], 64);
-    std::fill_n(FirstLine, 16, 0);
+    if (!SingleThreaded) {
+        std::fill_n(FirstLine, 16, 0);
+    }
 
     PackedColumnSumBuffer += RangeStartN;
-    if (RangeCountN > 16) {
-        std::fill_n(PackedColumnSumBuffer + 16, RangeCountN - 16, 0);
+    if (!SingleThreaded) {
+        if (RangeCountN > 16) {
+            std::fill_n(PackedColumnSumBuffer + 16, RangeCountN - 16, 0);
+        }
+    } else {
+        std::fill_n(PackedColumnSumBuffer, RangeCountN, 0);
     }
 
     B += RangeStartN;
@@ -1374,7 +1419,7 @@ MlasGemmU8X8CopyPackBThreaded(
             //
 
             for (size_t nn = 0; nn < CountN; nn++) {
-                if (n + nn < 16) {
+                if (!SingleThreaded && n + nn < 16) {
                     FirstLine[n + nn] += ColumnSumBuffer[nn];
                 } else {
                     PackedColumnSumBuffer[n + nn] += ColumnSumBuffer[nn];
@@ -1386,11 +1431,13 @@ MlasGemmU8X8CopyPackBThreaded(
         B += ldb * CountK;
     }
 
-    // Column buffers are padded to cacheline align, so a little
-    // overrun here is ok
-    memcpy(PackedColumnSumBuffer + 2, FirstLine + 2, 56);
-    auto* StoreDst = reinterpret_cast<std::atomic<uint64_t>*>(PackedColumnSumBuffer);
-    StoreDst->store(*((uint64_t*)FirstLine), std::memory_order_release);
+    if (!SingleThreaded) {
+        // Column buffers are padded to cacheline align, so a little
+        // overrun here is ok
+        memcpy(PackedColumnSumBuffer + 2, FirstLine + 2, 56);
+        auto* StoreDst = reinterpret_cast<std::atomic<uint64_t>*>(PackedColumnSumBuffer);
+        StoreDst->store(*((uint64_t*)FirstLine), std::memory_order_release);
+    }
 }
 
 
@@ -3937,27 +3984,36 @@ MlasGemmBatchFixedPartition(
     MLAS_GEMM_U8X8_PACKALL_OPERATION* GemmU8X8Operation = GemmU8X8Dispatch->AllPackedOperation;
 
     constexpr size_t unitwork = 2097152;
-    //
-    // Start with strides of 16, to reduce false sharing between threads.
-    // increase the strides if K is too small.
-    // 
-    // Can't use smaller than 16 strides, as we didn't allocate enough
-    // packing status buffer space in the packing buffer. So the jobs
-    // will be very big if K is very big. 
-    //
-    size_t StrideN = 16;
-    size_t StrideM = 48;
+    size_t StrideN;
+    size_t StrideM;
 
-    size_t multipler = unitwork / (StrideM * StrideN * K);
-    multipler = std::max(multipler, size_t(1));
+    auto ThreadCount = (size_t)MlasGetMaximumThreadCount(ThreadPool);
+    if ((BatchN >= ThreadCount - (ThreadCount >> 3) && BatchN <= ThreadCount) ||
+        BatchN >= 2 * ThreadCount - (ThreadCount >> 3)) {
+        // one thread per multiplication, reducing thread communication cost
+        StrideM = M;
+        StrideN = N;
+    } else {
+        // Start with strides of 16, to reduce false sharing between threads.
+        // increase the strides if K is too small.
+        //
+        // Can't use smaller than 16 strides, as we didn't allocate enough
+        // packing status buffer space in the packing buffer. So the jobs
+        // will be very big if K is very big.
+        //
+        StrideN = 16;
+        StrideM = 48;
+
+        size_t multipler = unitwork / (StrideM * StrideN * K);
+        multipler = std::max(multipler, size_t(1));
 
     StrideN *= multipler;
     if (StrideN >= (N - (N / 4))) {
         StrideN = N;
     }
 
-    multipler = unitwork / (StrideM * StrideN * K);
-    multipler = std::max(multipler, size_t(1));
+        multipler = unitwork / (StrideM * StrideN * K);
+        multipler = std::max(multipler, size_t(1));
 
     StrideM *= multipler;
     if (StrideM >= (M - (M / 4))) {
@@ -4246,7 +4302,7 @@ Return Value:
     MlasTrySimpleParallel(ThreadPool, NumSegs, [=](ptrdiff_t tid) {
         const size_t StartN = tid * StrideN;
         const size_t CountN = std::min(StrideN, N - StartN);
-        PackBFunc(N, K, StartN, CountN, B, ldb, BIsSigned, PackedB);
+        PackBFunc(N, K, StartN, CountN, B, ldb, BIsSigned, PackedB, true);
     });
 }
 
@@ -4284,7 +4340,7 @@ MlasGemmPackA(
     MlasTrySimpleParallel(ThreadPool, NumSegs, [=](ptrdiff_t tid) {
         const size_t StartM = tid * StrideM;
         const size_t CountM = std::min(StrideM, M - StartM);
-        PackAFunc(M, K, StartM, CountM, A, lda, PackedA);
+        PackAFunc(M, K, StartM, CountM, A, lda, PackedA, true);
     });
 }
 
@@ -4319,12 +4375,12 @@ MlasGemmPackAandB(
         if (size_t(tid) < NumMSegs) {
             const size_t StartM = tid * StrideM;
             const size_t CountM = std::min(StrideM, M - StartM);
-            PackAFunc(M, K, StartM, CountM, A, lda, PackedA);
+            PackAFunc(M, K, StartM, CountM, A, lda, PackedA, true);
         } else {
             tid -= NumMSegs;
             const size_t StartN = tid * StrideN;
             const size_t CountN = std::min(StrideN, N - StartN);
-            PackBFunc(N, K, StartN, CountN, B, ldb, BIsSigned, PackedB);
+            PackBFunc(N, K, StartN, CountN, B, ldb, BIsSigned, PackedB, true);
         }
     });
 }
