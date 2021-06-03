@@ -45,7 +45,8 @@ class MatMulIntegerBase : public OpKernel {
       memset(packed_b_data, 0, packed_b_size);
 
       packed_b_ = BufferUniquePtr(packed_b_data, BufferDeleter(alloc));
-      MlasGemmPackB(N, K, b_data, N, b_is_signed_, packed_b_data);
+      MlasGemmPackB(N, K, b_data, N, b_is_signed_, packed_b_data,
+                    nullptr);
 
       bool share_prepacked_weights = (prepacked_weights != nullptr);
       if (share_prepacked_weights) {

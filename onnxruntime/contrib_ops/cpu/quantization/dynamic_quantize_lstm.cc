@@ -73,7 +73,7 @@ Status DynamicQuantizeLSTM::TryPackWeights(const Tensor& weights, PackedWeights&
 
   const auto* weights_data = static_cast<const uint8_t*>(weights.DataRaw());
   for (int i = 0; i < num_directions_; i++) {
-    MlasGemmPackB(N, K, weights_data, N, is_weight_signed, packed_weights_data);
+    MlasGemmPackB(N, K, weights_data, N, is_weight_signed, packed_weights_data, nullptr);
     packed_weights_data = static_cast<uint8_t*>(packed_weights_data) + packed_weights_size;
     weights_data += N * K;
   }

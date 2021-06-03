@@ -12,7 +12,7 @@
 
 static const std::vector<std::string> qgemm_arg_names = {"M", "N", "K", "Batch", "Threads"};
 
-void QGEMM(benchmark::State& state, bool ruy_pack, bool prepack_b, bool b_is_signed) {
+void QGEMM(benchmark::State& state, bool prepack_b, bool b_is_signed) {
 
   const uint8_t a_zero_point = 29;
   const uint8_t b_zero_point = 179;
@@ -62,9 +62,8 @@ void QGEMM(benchmark::State& state, bool ruy_pack, bool prepack_b, bool b_is_sig
     gemm_params.ZeroPointB = &b_zero_point;
     gemm_params.ldc = gemm_shape.N;
     gemm_params.A = AlignAddr(A_holder.data()) + M * K * i;
-    if (ruy_pack) {
-      gemm_params.PackedA = (void*)(AlignAddr(pack_a_holder.data()) + packed_a_size * i);
-    }
+    gemm_params.PackedA = (void*)(AlignAddr(pack_a_holder.data()) + packed_a_size * i);
+
 
     gemm_params.B = AlignAddr(B_holder.data()) + N * K * i;
     void* PackedBBuf = (void*)(AlignAddr(pack_b_holder.data()) + packed_b_size * i);
@@ -73,12 +72,11 @@ void QGEMM(benchmark::State& state, bool ruy_pack, bool prepack_b, bool b_is_sig
       gemm_params.BIsPacked = true;
       gemm_params.B = PackedBBuf;
     }
-    if (ruy_pack) {
-      gemm_params.PackedB = PackedBBuf;
-      if (prepack_b) {
-        gemm_params.B = nullptr;
-      }
+    gemm_params.PackedB = PackedBBuf;
+    if (prepack_b) {
+      gemm_params.B = nullptr;
     }
+
 
     gemm_params.ldb = gemm_shape.N;
     gemm_params.C = AlignAddr(C_holder.data()) + M * N * i;
@@ -123,14 +121,10 @@ static void QGemmSize(benchmark::internal::Benchmark* b) {
 }
 
 
-BENCHMARK_CAPTURE(QGEMM, Old_NoPackB_UnsignedB, false, false, false)->Apply(QGemmSize)->UseRealTime();
-BENCHMARK_CAPTURE(QGEMM, Ruy_NoPackB_UnsignedB, true, false, false)->Apply(QGemmSize)->UseRealTime();
+BENCHMARK_CAPTURE(QGEMM, NoPackB_UnsignedB, false, false)->Apply(QGemmSize)->UseRealTime();
 
-BENCHMARK_CAPTURE(QGEMM, Old_PackB_UnsignedB, false, true, false)->Apply(QGemmSize)->UseRealTime();
-BENCHMARK_CAPTURE(QGEMM, Ruy_PackB_UnsignedB, true, true, false)->Apply(QGemmSize)->UseRealTime();
+BENCHMARK_CAPTURE(QGEMM, PackB_UnsignedB, true, false)->Apply(QGemmSize)->UseRealTime();
 
-BENCHMARK_CAPTURE(QGEMM, Old_NoPackB_SignedB, false, false, true)->Apply(QGemmSize)->UseRealTime();
-BENCHMARK_CAPTURE(QGEMM, Ruy_NoPackB_SignedB, true, false, true)->Apply(QGemmSize)->UseRealTime();
+BENCHMARK_CAPTURE(QGEMM, NoPackB_SignedB, false, true)->Apply(QGemmSize)->UseRealTime();
 
-BENCHMARK_CAPTURE(QGEMM, Old_PackB_SignedB, false, true, true)->Apply(QGemmSize)->UseRealTime();
-BENCHMARK_CAPTURE(QGEMM, Ruy_PackB_SignedB, true, true, true)->Apply(QGemmSize)->UseRealTime();
+BENCHMARK_CAPTURE(QGEMM, PackB_SignedB, true, true)->Apply(QGemmSize)->UseRealTime();

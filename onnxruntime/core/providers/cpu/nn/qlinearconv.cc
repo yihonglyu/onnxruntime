@@ -155,7 +155,7 @@ Status QLinearConv::PrePack(const Tensor& tensor, int input_idx, AllocatorPtr al
 
       for (int64_t group_id = 0; group_id < conv_attrs_.group; ++group_id) {
         ReorderFilter(Wdata, group_reordered_W, group_output_channels, group_input_channels, kernel_size);
-        MlasGemmPackB(group_output_channels, kernel_dim, group_reordered_W, group_output_channels, is_W_signed_, packed_W);
+        MlasGemmPackB(group_output_channels, kernel_dim, group_reordered_W, group_output_channels, is_W_signed_, packed_W, nullptr);
         packed_W += packed_W_size_;
         Wdata += W_offset;
       }

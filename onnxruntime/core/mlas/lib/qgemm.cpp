@@ -17,19 +17,13 @@ Abstract:
 
 #include "mlasi.h"
 
-//
-// Quantized integer matrix/matrix dispatch structure.
-//
-
 typedef
-void
-(MLAS_GEMM_U8X8_OPERATION)(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-    const size_t RangeStartM,
-    const size_t RangeCountM,
-    const size_t RangeStartN,
-    const size_t RangeCountN
+void 
+(MLAS_GEMM_U8X8_PART_OP)(
+    const MLAS_GEMM_U8X8_SHAPE_PARAMS& Shape,
+    const MLAS_GEMM_U8X8_DATA_PARAMS* DataParams,
+    const size_t BatchN,
+    MLAS_THREADPOOL* ThreadPool
     );
 
 //
@@ -42,19 +36,6 @@ struct MLAS_GEMM_U8X8_STRIDES {
     size_t N;
     size_t K;
 };
-
-
-typedef
-void
-(MLAS_GEMM_U8X8_PACKALL_OPERATION)(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-    const MLAS_GEMM_U8X8_STRIDES& Strides,
-    const size_t RangeStartM,
-    const size_t RangeCountM,
-    const size_t RangeStartN,
-    const size_t RangeCountN
-    );
 
 typedef
 void
@@ -100,9 +81,7 @@ void
 
 
 struct MLAS_GEMM_U8X8_DISPATCH {
-    MLAS_GEMM_U8X8_OPERATION* Operation;
-    MLAS_GEMM_U8X8_OPERATION* PackedOperation;
-    MLAS_GEMM_U8X8_PACKALL_OPERATION* AllPackedOperation;
+    MLAS_GEMM_U8X8_PART_OP* AllPackedOperation;
     size_t PackedK;
     size_t PackedStrideK;
 
@@ -285,451 +264,6 @@ MlasGemmU8X8Kernel(
 
 template<typename KernelType>
 void
-MlasGemmU8X8Operation(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-    const size_t RangeStartM,
-    const size_t RangeCountM,
-    const size_t RangeStartN,
-    const size_t RangeCountN
-    )
-/*++
-
-Routine Description:
-
-    This routine implements the quantized integer matrix/matrix multiply
-    operation (QGEMM).
-
-Arguments:
-
-    Shape - Supplies the structure containing the GEMM input and output shapes.
-
-    Data  - Supplies the structure containing the GEMM input and output data layout
-
-    RangeStartM - Supplies the starting row index to output.
-
-    RangeCountM - Supplies the number of rows to output.
-
-    RangeStartN - Supplies the starting column index to output.
-
-    RangeCountN - Supplies the number of columns to output.
-
-Return Value:
-
-    None.
-
---*/
-{
-    constexpr MLAS_GEMM_U8X8_STRIDES Strides = KernelType::Strides;
-
-    MLAS_DECLSPEC_ALIGN(typename KernelType::PackedAType PanelA[Strides.M * Strides.K], 64);
-    MLAS_DECLSPEC_ALIGN(typename KernelType::PackedBType PanelB[Strides.N * Strides.K], 64);
-
-    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[Strides.M], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[Strides.N], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[Strides.N], 64);
-
-    const size_t K = Shape->K;
-
-    const size_t lda = Data->lda;
-    const size_t ldb = Data->ldb;
-    const size_t ldc = Data->ldc;
-
-    const uint8_t* A = Data->A + RangeStartM * lda;
-    const uint8_t* B = (const uint8_t*)Data->B + RangeStartN;
-    int32_t* C = Data->C + RangeStartM * ldc + RangeStartN;
-    const uint8_t* PackedZeroPointB = Data->PerColumnZeroPoints ?
-        Data->ZeroPointB + RangeStartN : nullptr;
-
-    int32_t ZeroPointA = Data->ZeroPointA;
-    int32_t ZeroPointB = typename KernelType::OffsetBType(*Data->ZeroPointB);
-
-    //
-    // Try to use a GEMV kernel if supported by this kernel type.
-    //
-
-    if ((RangeCountM == 1) &&
-        (ZeroPointA == 0) && (PackedZeroPointB == nullptr) && (ZeroPointB == 0) &&
-        (Data->OutputProcessor == nullptr)) {
-        if (MlasGemmU8X8TryGemvKernel<KernelType>(A, B, ldb, C, K, RangeCountN, Shape->BIsSigned)) {
-            return;
-        }
-    }
-
-    //
-    // Fixup the sign bit of the per-matrix zero point offset of matrix B if the
-    // data is the opposite format of the kernel implementation. This value is
-    // ignored if per-column zero point offsets are used instead.
-    //
-
-    ZeroPointB = MlasGemmU8X8FixupZeroPointB<KernelType>(ZeroPointB, Shape->BIsSigned);
-
-    //
-    // Step through each slice of matrix B along the K dimension.
-    //
-
-    size_t CountK;
-
-    for (size_t k = 0; k < K; k += CountK) {
-
-        CountK = std::min(K - k, Strides.K);
-
-        const size_t PackedCountK = (CountK + KernelType::PackedK - 1) / KernelType::PackedK;
-
-        //
-        // Step through each slice of matrix B along the N dimension.
-        //
-
-        size_t CountN;
-
-        for (size_t n = 0; n < RangeCountN; n += CountN) {
-
-            CountN = std::min(RangeCountN - n, Strides.N);
-
-            //
-            // Fixup the sign bit of the per-column zero point offsets of matrix B
-            // if the data is the opposite format of the kernel implementation.
-            //
-
-            if (PackedZeroPointB != nullptr) {
-                MlasGemmU8X8FixupZeroPointB<KernelType>(
-                    PackedZeroPointB + n,
-                    ZeroPointBBuffer,
-                    CountN,
-                    Shape->BIsSigned);
-            }
-
-            //
-            // Copy a panel of matrix B to a local packed buffer.
-            //
-
-            MlasGemmU8X8CopyPackB<KernelType>(
-                PanelB,
-                B + n,
-                ldb,
-                CountN,
-                CountK,
-                ColumnSumBuffer,
-                Shape->BIsSigned);
-
-            MlasGemmU8X8ScaleSumBuffer(ColumnSumBuffer, CountN, -ZeroPointA);
-
-            //
-            // Step through each slice of matrix A along the M dimension.
-            //
-
-            int32_t* c = C + n;
-            size_t CountM;
-
-            for (size_t m = 0; m < RangeCountM; m += CountM) {
-
-                CountM = std::min(RangeCountM - m, Strides.M);
-
-                //
-                // Copy a panel of matrix A to a local packed buffer.
-                //
-
-                MlasGemmU8X8CopyPackA<KernelType>(
-                    PanelA,
-                    A + m * lda,
-                    lda,
-                    CountM,
-                    CountK,
-                    RowSumBuffer);
-
-                //
-                // Apply the global depth value constant without the ZeroPointB scaling from:
-                //
-                //     (A[i] - ZeroPointA) * (B[i] - ZeroPointB)
-                //              ==>
-                //     A[i] * B[i] - A[i] * ZeroPointB - B[i] * ZeroPointA + ZeroPointA * ZeroPointB
-                //
-                // The ZeroPointB term is factored out and either applied below for per-matrix
-                // quantization or inside the kernel for per-column quantization.
-                //
-
-                for (size_t mm = 0; mm < CountM; mm++) {
-                    RowSumBuffer[mm] -= int32_t(CountK) * ZeroPointA;
-                }
-
-                //
-                // Scale the row sums by the per-matrix zero point offset of matrix B.
-                //
-
-                if (PackedZeroPointB == nullptr) {
-                    MlasGemmU8X8ScaleSumBuffer(RowSumBuffer, CountM, -ZeroPointB);
-                }
-
-                //
-                // Step through the rows of the local packed buffer.
-                //
-
-                typename KernelType::PackedAType* pa = PanelA;
-                int32_t* RowSums = RowSumBuffer;
-                size_t RowsRemaining = CountM;
-
-                bool ZeroMode = (k == 0);
-                bool PostProcess = (k + CountK == K);
-
-                while (RowsRemaining > 0) {
-
-                    size_t RowsHandled = MlasGemmU8X8Kernel<KernelType>(
-                        pa,
-                        PanelB,
-                        c,
-                        PackedCountK,
-                        RowsRemaining,
-                        CountN,
-                        ldc,
-                        RowSums,
-                        ColumnSumBuffer,
-                        (PackedZeroPointB != nullptr) ? ZeroPointBBuffer : nullptr,
-                        ZeroMode);
-
-                    if (PostProcess && Data->OutputProcessor != nullptr) {
-                        Data->OutputProcessor->Process(
-                            Data->C,
-                            RangeStartM + m + CountM - RowsRemaining,
-                            RangeStartN + n,
-                            RowsHandled,
-                            CountN,
-                            Data->ldc);
-                    }
-
-                    c += ldc * RowsHandled;
-                    pa += KernelType::PackedK * PackedCountK * RowsHandled;
-                    RowSums += RowsHandled;
-                    RowsRemaining -= RowsHandled;
-                }
-            }
-        }
-
-        A += CountK;
-        B += CountK * ldb;
-    }
-}
-
-template<typename KernelType>
-void
-MlasGemmU8X8PackedOperation(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-    const size_t RangeStartM,
-    const size_t RangeCountM,
-    const size_t RangeStartN,
-    const size_t RangeCountN
-    )
-/*++
-
-Routine Description:
-
-    This routine implements the quantized integer matrix/matrix multiply
-    operation (QGEMM).
-
-Arguments:
-
-    Shape - Supplies the structure containing the GEMM input and output shapes.
-
-    Data  - Supplies the structure containing the GEMM input and output data layout
-
-    RangeStartM - Supplies the starting row index to output.
-
-    RangeCountM - Supplies the number of rows to output.
-
-    RangeStartN - Supplies the starting column index to output.
-
-    RangeCountN - Supplies the number of columns to output.
-
-Return Value:
-
-    None.
-
---*/
-{
-    constexpr MLAS_GEMM_U8X8_STRIDES Strides = KernelType::PackedStrides;
-
-    MLAS_DECLSPEC_ALIGN(typename KernelType::PackedAType PanelA[Strides.M * Strides.K], 64);
-
-    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[Strides.M], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[Strides.N], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[Strides.N], 64);
-
-    const size_t K = Shape->K;
-
-    const size_t lda = Data->lda;
-    const size_t ldc = Data->ldc;
-
-    const uint8_t* A = Data->A + RangeStartM * lda;
-    int32_t* C = Data->C + RangeStartM * ldc + RangeStartN;
-    const uint8_t* PackedZeroPointB = Data->PerColumnZeroPoints ?
-        Data->ZeroPointB + RangeStartN : nullptr;
-
-    int32_t ZeroPointA = Data->ZeroPointA;
-    int32_t ZeroPointB = typename KernelType::OffsetBType(*Data->ZeroPointB);
-
-    //
-    // Fixup the sign bit of the per-matrix zero point offset of matrix B if the
-    // data is the opposite format of the kernel implementation. This value is
-    // ignored if per-column zero point offsets are used instead.
-    //
-
-    ZeroPointB = MlasGemmU8X8FixupZeroPointB<KernelType>(ZeroPointB, Shape->BIsSigned);
-
-    //
-    // Extract the pointer to the column sum buffer from the packed matrix.
-    //
-    const size_t AlignedN =
-        (Shape->N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
-    const int32_t* PackedColumnSumBuffer = nullptr;
-    const typename KernelType::PackedBType* PackedB = nullptr;
-    MlasGetSumValBufFromPacked(Data->B, Shape->N, PackedColumnSumBuffer, PackedB);
-    PackedColumnSumBuffer += RangeStartN;
-
-    //
-    // Step through each slice of matrix B along the K dimension.
-    //
-
-    size_t CountK;
-
-    for (size_t k = 0; k < K; k += CountK) {
-
-        CountK = std::min(K - k, Strides.K);
-
-        const size_t PackedCountK = (CountK + KernelType::PackedK - 1) / KernelType::PackedK;
-
-        if (k > 0) {
-            std::fill_n(ColumnSumBuffer, Strides.N, 0);
-        }
-
-        //
-        // Step through each slice of matrix B along the N dimension.
-        //
-
-        size_t CountN;
-
-        for (size_t n = 0; n < RangeCountN; n += CountN) {
-
-            CountN = std::min(RangeCountN - n, Strides.N);
-
-            if (k == 0) {
-                MlasGemmU8X8ScaleSumBuffer(ColumnSumBuffer, PackedColumnSumBuffer + n,
-                    CountN, -ZeroPointA);
-            }
-
-            //
-            // Fixup the sign bit of the per-column zero point offsets of matrix B
-            // if the data is the opposite format of the kernel implementation.
-            //
-
-            if (PackedZeroPointB != nullptr) {
-                MlasGemmU8X8FixupZeroPointB<KernelType>(
-                    PackedZeroPointB + n,
-                    ZeroPointBBuffer,
-                    CountN,
-                    Shape->BIsSigned);
-            }
-
-            //
-            // Step through each slice of matrix A along the M dimension.
-            //
-
-            const uint8_t* b = PackedB + (RangeStartN + n) *
-                KernelType::PackedK * PackedCountK;
-            int32_t* c = C + n;
-            size_t CountM;
-
-            for (size_t m = 0; m < RangeCountM; m += CountM) {
-
-                CountM = std::min(RangeCountM - m, Strides.M);
-
-                //
-                // Copy a panel of matrix A to a local packed buffer.
-                //
-
-                MlasGemmU8X8CopyPackA<KernelType>(
-                    PanelA,
-                    A + m * lda,
-                    lda,
-                    CountM,
-                    CountK,
-                    RowSumBuffer);
-
-                //
-                // Apply the global depth value constant without the ZeroPointB scaling from:
-                //
-                //     (A[i] - ZeroPointA) * (B[i] - ZeroPointB)
-                //              ==>
-                //     A[i] * B[i] - A[i] * ZeroPointB - B[i] * ZeroPointA + ZeroPointA * ZeroPointB
-                //
-                // The ZeroPointB term is factored out and either applied below for per-matrix
-                // quantization or inside the kernel for per-column quantization.
-                //
-                // SUM(A[i] * B[i] - B[i] * ZeroPointA - (A[i] - ZeroPointA) * ZeroPointB)
-                // SUM(A[i] * B[i]) - SUM(B[i]) * ZeroPointA - (SUM(A[i]) - CountK * ZeroPointA) * ZeroPointB
- 
-                for (size_t mm = 0; mm < CountM; mm++) {
-                    RowSumBuffer[mm] -= int32_t(CountK) * ZeroPointA;
-                }
-
-                //
-                // Scale the row sums by the per-matrix zero point offset of matrix B.
-                //
-
-                if (PackedZeroPointB == nullptr) {
-                    MlasGemmU8X8ScaleSumBuffer(RowSumBuffer, CountM, -ZeroPointB);
-                }
-
-                //
-                // Step through the rows of the local packed buffer.
-                //
-
-                typename KernelType::PackedAType* pa = PanelA;
-                int32_t* RowSums = RowSumBuffer;
-                size_t RowsRemaining = CountM;
-
-                bool ZeroMode = (k == 0);
-                bool PostProcess = (k + CountK == K);
-
-                while (RowsRemaining > 0) {
-
-                    size_t RowsHandled = MlasGemmU8X8Kernel<KernelType>(
-                        pa,
-                        b,
-                        c,
-                        PackedCountK,
-                        RowsRemaining,
-                        CountN,
-                        ldc,
-                        RowSums,
-                        ColumnSumBuffer,
-                        (PackedZeroPointB != nullptr) ? ZeroPointBBuffer : nullptr,
-                        ZeroMode);
-
-                    if (PostProcess && Data->OutputProcessor != nullptr) {
-                        Data->OutputProcessor->Process(
-                            Data->C,
-                            RangeStartM + m + CountM - RowsRemaining,
-                            RangeStartN + n,
-                            RowsHandled,
-                            CountN,
-                            Data->ldc);
-                    }
-
-                    c += ldc * RowsHandled;
-                    pa += KernelType::PackedK * PackedCountK * RowsHandled;
-                    RowSums += RowsHandled;
-                    RowsRemaining -= RowsHandled;
-                }
-            }
-        }
-
-        A += CountK;
-        PackedB = (const uint8_t*)PackedB + AlignedN * CountK;
-    }
-}
-
-template<typename KernelType>
-void
 MlasGemmU8X8CopyPackAThreaded(
     size_t M,
     size_t K,
@@ -857,61 +391,6 @@ TryPackB(const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
     return true;
 }
 
-
-template <typename KernelType>
-void
-EnsurePacked(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-    size_t RangeStartM,
-    size_t RangeCountM,
-    size_t RangeStartN,
-    size_t RangeCountN
-    )
-{
-    bool Apacked = false;
-    bool Bpacked = false;
-
-    // variables for look ahead packing
-    //size_t nextM = RangeStartM;
-    //size_t nextN = RangeStartN;
-    //bool nextSideA = false;
-
-    while (true) {
-        if (!Apacked) {
-            Apacked = TryPackA<KernelType>(Shape, Data, RangeStartM, RangeCountM);
-        }
-        if (!Bpacked) {
-            Bpacked = TryPackB<KernelType>(Shape, Data, RangeStartN, RangeCountN);
-        }
-        if (Apacked && Bpacked) {
-            // mission acomplished.
-            break;
-        }
-
-        // someone else is packing for us. trying to do some work for others while
-        // waiting
-        //nextSideA = !nextSideA;
-        //if (nextSideA) {
-        //    nextM += RangeCountM;
-        //    if (nextM >= Shape->M) {
-        //        nextM = 0;
-        //    }
-        //    if (nextM != RangeStartM) {
-        //        TryPackA<KernelType>(Shape, Data, nextM, RangeCountM);
-        //    }
-        //} else {
-        //    nextN += RangeCountN;
-        //    if (nextN >= Shape->N) {
-        //        nextN = 0;
-        //    }
-        //    if (nextN != RangeStartN) {
-        //        TryPackB<KernelType>(Shape, Data, nextN, RangeCountN);
-        //    }
-        //}
-    }
-}
-
 template <typename KernelType>
 void
 MlasGemmU8X8AllPackedOperation(
@@ -924,8 +403,6 @@ MlasGemmU8X8AllPackedOperation(
     size_t RangeCountN
     )
 {
-    EnsurePacked<KernelType>(Shape, Data, RangeStartM, RangeCountM, RangeStartN, RangeCountN);
-
     // These counts are actually strides shared by all threaded tasks.
     RangeCountM = std::min(RangeCountM, Shape->M - RangeStartM);
     RangeCountN = std::min(RangeCountN, Shape->N - RangeStartN);
@@ -999,6 +476,8 @@ MlasGemmU8X8AllPackedOperation(
             CountN = std::min(RangeCountN - n, Strides.N);
 
             if (k == 0) {
+                while (!TryPackB<KernelType>(Shape, Data, n + RangeStartN, CountN)) {
+                }
                 MlasGemmU8X8ScaleSumBuffer(ColumnSumBuffer, PackedColumnSumBuffer + n,
                     CountN, -ZeroPointA);
             }
@@ -1020,7 +499,7 @@ MlasGemmU8X8AllPackedOperation(
             // Step through each slice of matrix A along the M dimension.
             //
 
-            const uint8_t* b = PackedB + (RangeStartN + n) * KernelType::PackedK * PackedCountK;
+            const auto* b = PackedB + (RangeStartN + n) * KernelType::PackedK * PackedCountK;
             int32_t* c = C + n;
             size_t CountM;
 
@@ -1033,6 +512,8 @@ MlasGemmU8X8AllPackedOperation(
                     (RangeStartM + m) * KernelType::PackedK * PackedCountK;
 
                 if (k == 0) {
+                    while (!TryPackA<KernelType>(Shape, Data, m + RangeStartM, CountM)) {
+                    }
                     //
                     // Apply the global depth value constant without the ZeroPointB scaling from:
                     //
@@ -1104,10 +585,147 @@ MlasGemmU8X8AllPackedOperation(
         }
 
         PackedA += Shape->M * KernelType::PackedK * PackedCountK;
-        PackedB = (const uint8_t*)PackedB + AlignedN * CountK;
+        PackedB = PackedB + AlignedN * CountK;
     }
 }
 
+template <typename KernelType>
+MLAS_FORCEINLINE size_t
+MlasQGemmPackPanelASize(const MLAS_GEMM_U8X8_STRIDES& Strides)
+{
+    const size_t K = (Strides.K + KernelType::PackedK - 1) & ~(KernelType::PackedK - 1);
+    const size_t PackPanelASize = Strides.M * K * sizeof(typename KernelType::PackedAType);
+
+    return PackPanelASize;
+}
+
+template <typename KernelType>
+MLAS_FORCEINLINE size_t
+MlasQGemmPackPanelBSize(const MLAS_GEMM_U8X8_STRIDES& Strides)
+{
+    const size_t K = (Strides.K + KernelType::PackedK - 1) & ~(KernelType::PackedK - 1);
+    const size_t N = (Strides.N + 15) & ~15;
+    const size_t PackPanelBSize = K * N * sizeof(typename KernelType::PackedBType);
+
+    return PackPanelBSize;
+}
+
+
+
+template <typename KernelType>
+void MLASCALL
+MlasGemmBatchBlockPartition(
+    const MLAS_GEMM_U8X8_SHAPE_PARAMS& Shape,
+    const MLAS_GEMM_U8X8_DATA_PARAMS* DataParams,
+    const size_t BatchN,
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    constexpr size_t unitwork = 2097152;
+
+    //
+    // Start with strides of 16, to reduce false sharing between threads.
+    // increase the strides if K is too small.
+    //
+    // Can't use smaller than 16 strides, as we didn't allocate enough
+    // packing status buffer space in the packing buffer. So the jobs
+    // will be very big if K is very big.
+    //
+    size_t StrideN = 16;
+    size_t StrideM = 48;
+
+    size_t multipler = unitwork / (StrideM * StrideN * Shape.K);
+    multipler = std::max(multipler, size_t(1));
+
+    StrideN *= multipler;
+    if (StrideN >= (Shape.N - (Shape.N / 4))) {
+        StrideN = Shape.N;
+    }
+
+    multipler = unitwork / (StrideM * StrideN * Shape.K);
+    multipler = std::max(multipler, size_t(1));
+
+    StrideM *= multipler;
+    if (StrideM >= (Shape.M - (Shape.M / 4))) {
+        StrideM = Shape.M;
+    }
+
+    size_t numJobN = (Shape.N + StrideN - 1) / StrideN;
+    size_t numJobM = (Shape.M + StrideM - 1) / StrideM;
+    size_t NumJobPerGemm = numJobM * numJobN;
+
+    constexpr size_t CacheSize = 256 * 1024;
+    constexpr size_t BPanelSize = CacheSize / 3;
+    constexpr size_t AllPanelSize = CacheSize * 5 / 8;
+
+    MLAS_GEMM_U8X8_STRIDES Strides;
+    Strides.K = std::min(Shape.K, KernelType::Strides.K);
+
+    // try to find a shape for panel B that fill half cache
+    const size_t AlignKernelStrideK =
+        (Strides.K + KernelType::PackedK - 1) & ~(KernelType::PackedK - 1);
+
+    size_t BStrideLimit =
+        std::min(size_t(1024), BPanelSize / (AlignKernelStrideK * sizeof(KernelType::PackedBType)));
+    if (BStrideLimit >= StrideN) {
+        Strides.N = StrideN;
+    } else {
+        BStrideLimit = BStrideLimit & ~15;
+        auto factor = (StrideN + BStrideLimit - 1) / BStrideLimit;
+        Strides.N = StrideN / factor;
+        Strides.N = (Strides.N + 15) / 16 * 16;
+    }
+
+    const size_t AlignKernelStrideN = (Strides.N + 15) & ~15;
+    size_t AStrideLimit =
+        std::min(size_t(1024), (AllPanelSize - MlasQGemmPackPanelBSize<KernelType>(Strides)) /
+                                   (AlignKernelStrideK * sizeof(KernelType::PackedAType)));
+    if (AStrideLimit >= StrideM) {
+        Strides.M = StrideM;
+    } else {
+        AStrideLimit -= (AStrideLimit % 48);
+        auto factor = (StrideM + AStrideLimit - 1) / AStrideLimit;
+        Strides.M = StrideM / factor;
+        Strides.M = (Strides.M + 47) / 48 * 48;
+    }
+
+    //  zero out packing status if original inputs or prepacking lambda is present.
+    for (size_t batchIdx = 0; batchIdx < BatchN; batchIdx++) {
+        auto& data = DataParams[batchIdx];
+        int32_t* SumBuffer;
+        uint8_t* Packed;
+
+        if (data.A) {
+            MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedA, Shape.M, SumBuffer, Packed);
+            for (size_t m = 0; m < Shape.M; m += StrideM) {
+                for (size_t mm = 0; mm < StrideM && m + mm < Shape.M; mm += Strides.M) {
+                    uint64_t* PackStatus = (uint64_t*)(SumBuffer + m + mm);
+                    *PackStatus = PackStatusNotStarted;
+                }
+            }
+        }
+        if (data.B) {
+            MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedB, Shape.N, SumBuffer, Packed);
+            for (size_t n = 0; n < Shape.N; n += StrideN) {
+                for (size_t nn = 0; nn < StrideN && n + nn < Shape.N; nn += Strides.N) {
+                    uint64_t* PackStatus = (uint64_t*)(SumBuffer + n + nn);
+                    *PackStatus = PackStatusNotStarted;
+                }
+            }
+        }
+    }
+
+    MlasTrySimpleParallel(ThreadPool, BatchN * NumJobPerGemm, [&](ptrdiff_t tid) {
+        const auto gemm_i = tid / NumJobPerGemm;
+        const auto blk_i = tid % NumJobPerGemm;
+
+        const auto m_idx = blk_i % numJobM;
+        const auto n_idx = blk_i / numJobM;
+        MlasGemmU8X8AllPackedOperation<KernelType>(&Shape, &(DataParams[gemm_i]), Strides,
+                                                   m_idx * StrideM, StrideM, n_idx * StrideN,
+                                                   StrideN);
+    });
+}
 
 /**
  * @brief Compute the size of the packed A buffer needed
@@ -1198,7 +816,7 @@ MlasGemmU8X8CopyPackAThreaded(
 
     for (size_t k = 0; k < K; k += CountK) {
 
-        CountK = std::min(K - k, KernelType::PackedStrides.K);
+        CountK = std::min(K - k, KernelType::Strides.K);
 
         //
         // Step through each block of matrix A along the M dimension.
@@ -1317,7 +935,7 @@ MlasGemmU8X8CopyPackBThreaded(
     // Retrieve the packing parameters.
     //
     constexpr size_t PackedK = KernelType::PackedK;
-    constexpr size_t PackedStrideK = KernelType::PackedStrides.K;
+    constexpr size_t PackedStrideK = KernelType::Strides.K;
 
     //
     // Reserve and initialize storage for the column sum buffer to hold the sums
@@ -1382,7 +1000,7 @@ MlasGemmU8X8CopyPackBThreaded(
             }
         }
 
-        PackedB = (uint8_t*)PackedB + AlignedN * AlignedK;
+        PackedB = PackedB + AlignedN * AlignedK;
         B += ldb * CountK;
     }
 
@@ -1858,9 +1476,7 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8X8_KERNEL_SSE>(
 }
 
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchSse = {
-    MlasGemmU8X8Operation<MLAS_GEMM_U8X8_KERNEL_SSE>,
-    nullptr,
-    nullptr,
+    MlasGemmBatchBlockPartition<MLAS_GEMM_U8X8_KERNEL_SSE>,
     MLAS_GEMM_U8X8_KERNEL_SSE::PackedK,
     0,
     nullptr,
@@ -1883,12 +1499,10 @@ struct MLAS_GEMM_U8S8_KERNEL_SSE41
 
     static constexpr size_t PackedK = 4;
     static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 128, 128};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{24, 128, 128};
 };
 
 constexpr size_t MLAS_GEMM_U8S8_KERNEL_SSE41::PackedK;
 constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8S8_KERNEL_SSE41::Strides;
-constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8S8_KERNEL_SSE41::PackedStrides;
 
 template<>
 void
@@ -2291,11 +1905,9 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8S8_KERNEL_SSE41>(
 }
 
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8S8DispatchSse41 = {
-    MlasGemmU8X8Operation<MLAS_GEMM_U8S8_KERNEL_SSE41>,
-    MlasGemmU8X8PackedOperation<MLAS_GEMM_U8S8_KERNEL_SSE41>,
-    MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8S8_KERNEL_SSE41>,
+    MlasGemmBatchBlockPartition<MLAS_GEMM_U8S8_KERNEL_SSE41>,
     MLAS_GEMM_U8S8_KERNEL_SSE41::PackedK,
-    MLAS_GEMM_U8S8_KERNEL_SSE41::PackedStrides.K,
+    MLAS_GEMM_U8S8_KERNEL_SSE41::Strides.K,
 
     MlasGemmPackASizeT<MLAS_GEMM_U8S8_KERNEL_SSE41>,
     MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8S8_KERNEL_SSE41>,
@@ -2374,13 +1986,11 @@ struct MLAS_GEMM_U8S8_KERNEL_AVX2
     typedef int8_t OffsetBType;
 
     static constexpr size_t PackedK = 4;
-    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 256, 128};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 512};
+    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{48, 256, 384};
 };
 
 constexpr size_t MLAS_GEMM_U8S8_KERNEL_AVX2::PackedK;
 constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8S8_KERNEL_AVX2::Strides;
-constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8S8_KERNEL_AVX2::PackedStrides;
 
 template<>
 MLAS_FORCEINLINE
@@ -2471,11 +2081,9 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8S8_KERNEL_AVX2>(
 }
 
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8S8DispatchAvx2 = {
-    MlasGemmU8X8Operation<MLAS_GEMM_U8S8_KERNEL_AVX2>,
-    MlasGemmU8X8PackedOperation<MLAS_GEMM_U8S8_KERNEL_AVX2>,
-    MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8S8_KERNEL_AVX2>,
+    MlasGemmBatchBlockPartition<MLAS_GEMM_U8S8_KERNEL_AVX2>,
     MLAS_GEMM_U8S8_KERNEL_AVX2::PackedK,
-    MLAS_GEMM_U8S8_KERNEL_AVX2::PackedStrides.K,
+    MLAS_GEMM_U8S8_KERNEL_AVX2::Strides.K,
 
     MlasGemmPackASizeT<MLAS_GEMM_U8S8_KERNEL_AVX2>,
     MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8S8_KERNEL_AVX2>,
@@ -2491,13 +2099,11 @@ struct MLAS_GEMM_U8U8_KERNEL_AVX2
     typedef uint8_t OffsetBType;
 
     static constexpr size_t PackedK = 2;
-    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 256, 128};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{48, 256, 512};
+    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{48, 256, 384};
 };
 
 constexpr size_t MLAS_GEMM_U8U8_KERNEL_AVX2::PackedK;
 constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8U8_KERNEL_AVX2::Strides;
-constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8U8_KERNEL_AVX2::PackedStrides;
 
 template<>
 MLAS_FORCEINLINE
@@ -2555,11 +2161,9 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8U8_KERNEL_AVX2>(
 
 
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8U8DispatchAvx2 = {
-    MlasGemmU8X8Operation<MLAS_GEMM_U8U8_KERNEL_AVX2>,
-    MlasGemmU8X8PackedOperation<MLAS_GEMM_U8U8_KERNEL_AVX2>,
-    MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8U8_KERNEL_AVX2>,
+    MlasGemmBatchBlockPartition<MLAS_GEMM_U8U8_KERNEL_AVX2>,
     MLAS_GEMM_U8U8_KERNEL_AVX2::PackedK,
-    MLAS_GEMM_U8U8_KERNEL_AVX2::PackedStrides.K,
+    MLAS_GEMM_U8U8_KERNEL_AVX2::Strides.K,
 
     MlasGemmPackASizeT<MLAS_GEMM_U8U8_KERNEL_AVX2>,
     MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8U8_KERNEL_AVX2>,
@@ -2605,12 +2209,10 @@ struct MLAS_GEMM_U8X8_KERNEL_NEON
 
     static constexpr size_t PackedK = 4;
     static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 128, 256};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{24, 128, 256};
 };
 
 constexpr size_t MLAS_GEMM_U8X8_KERNEL_NEON::PackedK;
 constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8X8_KERNEL_NEON::Strides;
-constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8X8_KERNEL_NEON::PackedStrides;
 
 template<>
 MLAS_FORCEINLINE
@@ -3061,7 +2663,7 @@ const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchNeon = {
     MlasGemmU8X8PackedOperation<MLAS_GEMM_U8X8_KERNEL_NEON>,
     MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8X8_KERNEL_NEON>,
     MLAS_GEMM_U8X8_KERNEL_NEON::PackedK,
-    MLAS_GEMM_U8X8_KERNEL_NEON::PackedStrides.K,
+    MLAS_GEMM_U8X8_KERNEL_NEON::Strides.K,
 
     MlasGemmPackASizeT<MLAS_GEMM_U8X8_KERNEL_NEON>,
     MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8X8_KERNEL_NEON>,
@@ -3104,13 +2706,11 @@ struct MLAS_GEMM_U8X8_KERNEL_UDOT
     typedef uint8_t OffsetBType;
 
     static constexpr size_t PackedK = 8;
-    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 128, 256};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{24, 128, 384};
+    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 128, 384};
 };
 
 constexpr size_t MLAS_GEMM_U8X8_KERNEL_UDOT::PackedK;
 constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8X8_KERNEL_UDOT::Strides;
-constexpr MLAS_GEMM_U8X8_STRIDES MLAS_GEMM_U8X8_KERNEL_UDOT::PackedStrides;
 
 template<>
 MLAS_FORCEINLINE
@@ -3639,7 +3239,7 @@ const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchUdot = {
     MlasGemmU8X8PackedOperation<MLAS_GEMM_U8X8_KERNEL_UDOT>,
     MlasGemmU8X8AllPackedOperation<MLAS_GEMM_U8X8_KERNEL_UDOT>,
     MLAS_GEMM_U8X8_KERNEL_UDOT::PackedK,
-    MLAS_GEMM_U8X8_KERNEL_UDOT::PackedStrides.K,
+    MLAS_GEMM_U8X8_KERNEL_UDOT::Strides.K,
 
     MlasGemmPackASizeT<MLAS_GEMM_U8X8_KERNEL_UDOT>,
     MlasGemmU8X8CopyPackAThreaded<MLAS_GEMM_U8X8_KERNEL_UDOT>,
@@ -3658,7 +3258,6 @@ struct MLAS_GEMM_U8X8_KERNEL_DEFAULT
 
     static constexpr size_t PackedK = 4;
     static constexpr MLAS_GEMM_U8X8_STRIDES Strides{16, 128, 128};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{16, 128, 128};
 };
 
 template<>
@@ -3826,9 +3425,7 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8X8_KERNEL_DEFAULT>(
 
 
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchDefault = {
-    MlasGemmU8X8Operation<MLAS_GEMM_U8X8_KERNEL_DEFAULT>,
-    nullptr,
-    nullptr,
+    MlasGemmBatchBlockPartition<MLAS_GEMM_U8X8_KERNEL_DEFAULT>,
     MLAS_GEMM_U8X8_KERNEL_DEFAULT::PackedK,
     0,
 
@@ -3838,194 +3435,6 @@ const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchDefault = {
     nullptr,
 };
 
-
-void
-MlasGemmU8X8Threaded(
-    const MLAS_GEMM_U8X8_WORK_BLOCK* WorkBlock,
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-    ptrdiff_t ThreadId
-    )
-/*++
-
-Routine Description:
-
-    This routine is invoked from a worker thread to execute a segment of a
-    QGEMM operation.
-
-Arguments:
-
-    ThreadInfo - Supplies the structure containing the thread task partition info.
-
-    Shape - Supplies the structure containing the GEMM input and output shapes.
-
-    Data  - Supplies the structure containing the GEMM input and output data layout
-
-    ThreadId - Supplies the current index of the threaded operation.
-
-Return Value:
-
-    None.
-
---*/
-{
-    const ptrdiff_t ThreadIdM = ThreadId / WorkBlock->ThreadCountN;
-    const ptrdiff_t ThreadIdN = ThreadId % WorkBlock->ThreadCountN;
-
-    //
-    // Partition the operation along the M dimension.
-    //
-
-    size_t RangeStartM;
-    size_t RangeCountM;
-
-    const size_t M = Shape->M;
-
-    MlasPartitionWork(ThreadIdM, WorkBlock->ThreadCountM, M, &RangeStartM, &RangeCountM);
-
-    //
-    // Partition the operation along the N dimension.
-    //
-
-    size_t RangeStartN;
-    size_t RangeCountN;
-
-    const size_t N = Shape->N;
-
-    const size_t BlockedN = (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) /
-        MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
-
-    MlasPartitionWork(ThreadIdN, WorkBlock->ThreadCountN, BlockedN,
-        &RangeStartN, &RangeCountN);
-
-    RangeStartN *= MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
-    RangeCountN *= MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
-
-    RangeCountN = std::min(N - RangeStartN, RangeCountN);
-
-    //
-    // Dispatch the partitioned operation.
-    //
-
-    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(Shape->BIsSigned);
-    MLAS_GEMM_U8X8_OPERATION* GemmU8X8Operation;
-
-    if (Data->BIsPacked) {
-        GemmU8X8Operation = GemmU8X8Dispatch->PackedOperation;
-    } else {
-        GemmU8X8Operation = GemmU8X8Dispatch->Operation;
-    }
-
-    GemmU8X8Operation(Shape, Data, RangeStartM, RangeCountM, RangeStartN, RangeCountN);
-}
-
-
-
-void
-MLASCALL
-MlasGemmBatchFixedPartition(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS& Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS* DataParams,
-    const size_t BatchN,
-    MLAS_THREADPOOL* ThreadPool)
-{
-    const size_t M = Shape.M;
-    const size_t N = Shape.N;
-    const size_t K = Shape.K;
-
-    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(Shape.BIsSigned);
-    MLAS_GEMM_U8X8_PACKALL_OPERATION* GemmU8X8Operation = GemmU8X8Dispatch->AllPackedOperation;
-
-    constexpr size_t unitwork = 2097152;
-    //
-    // Start with strides of 16, to reduce false sharing between threads.
-    // increase the strides if K is too small.
-    // 
-    // Can't use smaller than 16 strides, as we didn't allocate enough
-    // packing status buffer space in the packing buffer. So the jobs
-    // will be very big if K is very big. 
-    //
-    size_t StrideN = 16;
-    size_t StrideM = 48;
-
-    size_t multipler = unitwork / (StrideM * StrideN * K);
-    multipler = std::max(multipler, size_t(1));
-
-    StrideN *= multipler;
-    if (StrideN >= (N - (N / 4))) {
-        StrideN = N;
-    }
-
-    multipler = unitwork / (StrideM * StrideN * K);
-    multipler = std::max(multipler, size_t(1));
-
-    StrideM *= multipler;
-    if (StrideM >= (M - (M / 4))) {
-        StrideM = M;
-    }
-
-    size_t numJobN = (N + StrideN - 1) / StrideN;
-    size_t numJobM = (M + StrideM - 1) / StrideM;
-    size_t NumJobPerGemm = numJobM * numJobN;
-
-    //  zero out packing status if original inputs or prepacking lambda is present.
-    for (size_t batchIdx = 0; batchIdx < BatchN; batchIdx++) {
-        auto& data = DataParams[batchIdx];
-        int32_t* SumBuffer;
-        uint8_t* Packed;
-
-        if (data.A) {
-            MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedA, M, SumBuffer, Packed);
-            for (size_t m = 0; m < M; m += StrideM) {
-                uint64_t* PackStatus = (uint64_t*)(SumBuffer + m);
-                *PackStatus = PackStatusNotStarted;
-            }
-        }
-        if (data.B) {
-            MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedB, N, SumBuffer, Packed);
-            for (size_t n = 0; n < N; n += StrideN) {
-                uint64_t* PackStatus = (uint64_t*)(SumBuffer + n);
-                *PackStatus = PackStatusNotStarted;
-            }
-        }
-    }
-
-    constexpr size_t CacheSize = 256 * 1024;
-    constexpr size_t BPanelSize = CacheSize / 2;
-    constexpr size_t AllPanelSize = CacheSize * 3 / 4;
-
-    MLAS_GEMM_U8X8_STRIDES Strides;
-    Strides.K = std::min(K, GemmU8X8Dispatch->PackedStrideK);
-
-    // try to find a shape for panel B that fill half cache
-    size_t BStrideLimit = std::min(size_t(1024), BPanelSize / Strides.K);
-    if (BStrideLimit >= StrideN) {
-        Strides.N = StrideN;
-    } else {
-        Strides.N = BStrideLimit & ~15;
-    }
-
-    size_t AStrideLimit = std::min(size_t(1024), (AllPanelSize - Strides.N * Strides.K) / Strides.K );
-    if (!Shape.BIsSigned) {
-        AStrideLimit /= 2;
-    }
-    if (AStrideLimit >= StrideM) {
-        Strides.M = StrideM;
-    } else {
-        Strides.M = AStrideLimit - (AStrideLimit % 48);
-    }
-
-    MlasTrySimpleParallel(ThreadPool, BatchN * NumJobPerGemm, [&](ptrdiff_t tid) {
-        const auto gemm_i = tid / NumJobPerGemm;
-        const auto blk_i = tid % NumJobPerGemm;
-
-        const auto m_idx = blk_i % numJobM;
-        const auto n_idx = blk_i / numJobM; 
-        
-        GemmU8X8Operation(&Shape, &(DataParams[gemm_i]), Strides, m_idx * StrideM, StrideM,
-            n_idx * StrideN, StrideN);
-    });
-}
 
 void
 MLASCALL
@@ -4066,77 +3475,8 @@ MlasGemmBatch(
     const size_t BatchN,
     MLAS_THREADPOOL* ThreadPool)
 {
-    if (DataParams->PackedA) {
-        MlasGemmBatchFixedPartition(Shape, DataParams, BatchN, ThreadPool);
-        return;
-    }
-    const size_t M = Shape.M;
-    const size_t N = Shape.N;
-    const size_t K = Shape.K;
-
-    //
-    // Compute the number of target threads given the complexity of the SGEMM
-    // operation. Small requests should run using the single threaded path.
-    //
-
-    const double Complexity = double(M) * double(N) * double(K) * double(BatchN);
-
-    ptrdiff_t TargetThreadCount;
-
-    if (Complexity < double(MLAS_QGEMM_THREAD_COMPLEXITY * MlasPlatform.MaximumThreadCount)) {
-        TargetThreadCount = ptrdiff_t(Complexity / double(MLAS_QGEMM_THREAD_COMPLEXITY)) + 1;
-    } else {
-        TargetThreadCount = MlasPlatform.MaximumThreadCount;
-    }
-
-    ptrdiff_t MaximumThreadCount = MlasGetMaximumThreadCount(ThreadPool);
-
-    if (TargetThreadCount >= MaximumThreadCount) {
-        TargetThreadCount = MaximumThreadCount;
-    }
-
-    ptrdiff_t ThreadsPerGemm = TargetThreadCount / BatchN;
-    if (ThreadsPerGemm < 1) {
-        ThreadsPerGemm = 1;
-    }
-
-    //
-    // Segment the operation across multiple threads.
-    //
-    // N.B. Currently, the operation is segmented as a 1D partition, which
-    // works okay for operations involving skinny matrices.
-    //
-
-    MLAS_GEMM_U8X8_WORK_BLOCK WorkBlock;
-
-    if (N > M) {
-
-        const size_t BlockedN = (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) /
-            MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
-
-        if (size_t(ThreadsPerGemm) > BlockedN) {
-            ThreadsPerGemm = ptrdiff_t(BlockedN);
-        }
-
-        WorkBlock.ThreadCountM = 1;
-        WorkBlock.ThreadCountN = ThreadsPerGemm;
-
-    } else {
-
-        if (size_t(ThreadsPerGemm) > M) {
-            ThreadsPerGemm = ptrdiff_t(M);
-        }
-
-        WorkBlock.ThreadCountM = ThreadsPerGemm;
-        WorkBlock.ThreadCountN = 1;
-    }
-    TargetThreadCount = ThreadsPerGemm * BatchN;
-
-    MlasTrySimpleParallel(ThreadPool, TargetThreadCount, [&](ptrdiff_t tid) {
-        const auto gemm_i = tid / ThreadsPerGemm;
-        const auto blk_i = tid % ThreadsPerGemm;
-        MlasGemmU8X8Threaded(&WorkBlock, &Shape, &DataParams[gemm_i], blk_i);
-    });
+    const auto* GemmU8X8Dispatch = MlasGemmU8X8GetDispatch(Shape.BIsSigned);
+    GemmU8X8Dispatch->AllPackedOperation(Shape, DataParams, BatchN, ThreadPool);
 }
 
 /**
