@@ -396,13 +396,27 @@ void
 MlasGemmU8X8AllPackedOperation(
     const MLAS_GEMM_U8X8_SHAPE_PARAMS* Shape,
     const MLAS_GEMM_U8X8_DATA_PARAMS* Data,
-    const MLAS_GEMM_U8X8_STRIDES& Strides,
     size_t RangeStartM,
     size_t RangeCountM,
     size_t RangeStartN,
     size_t RangeCountN
     )
 {
+    bool Apacked = false;
+    bool Bpacked = false;
+    while (true) {
+        if (!Apacked) {
+            Apacked = TryPackA<KernelType>(Shape, Data, RangeStartM, RangeCountM);
+        }
+        if (!Bpacked) {
+            Bpacked = TryPackB<KernelType>(Shape, Data, RangeStartN, RangeCountN);
+        }
+        if (Apacked && Bpacked) {
+            // mission acomplished.
+            break;
+        }
+    }
+
     // These counts are actually strides shared by all threaded tasks.
     RangeCountM = std::min(RangeCountM, Shape->M - RangeStartM);
     RangeCountN = std::min(RangeCountN, Shape->N - RangeStartN);
@@ -455,31 +469,24 @@ MlasGemmU8X8AllPackedOperation(
 
     for (size_t k = 0; k < K; k += CountK) {
 
-        CountK = std::min(K - k, Strides.K);
+        CountK = std::min(K - k, KernelType::Strides.K);
 
         const size_t PackedCountK = (CountK + KernelType::PackedK - 1) /
                                     KernelType::PackedK;
 
         if (k > 0) {
-            std::fill_n(ColumnSumBuffer, Strides.N, 0);
-            std::fill_n(RowSumBuffer, Strides.M, 0);
+            std::fill_n(ColumnSumBuffer, RangeCountN, 0);
+            std::fill_n(RowSumBuffer, RangeCountM, 0);
         }
 
         //
         // Step through each slice of matrix B along the N dimension.
         //
-
-        size_t CountN;
-
-        for (size_t n = 0; n < RangeCountN; n += CountN) {
-
-            CountN = std::min(RangeCountN - n, Strides.N);
+        {
 
             if (k == 0) {
-                while (!TryPackB<KernelType>(Shape, Data, n + RangeStartN, CountN)) {
-                }
-                MlasGemmU8X8ScaleSumBuffer(ColumnSumBuffer, PackedColumnSumBuffer + n,
-                    CountN, -ZeroPointA);
+                MlasGemmU8X8ScaleSumBuffer(ColumnSumBuffer, PackedColumnSumBuffer,
+                    RangeCountN, -ZeroPointA);
             }
 
             //
@@ -489,9 +496,9 @@ MlasGemmU8X8AllPackedOperation(
 
             if (PackedZeroPointB != nullptr) {
                 MlasGemmU8X8FixupZeroPointB<KernelType>(
-                    PackedZeroPointB + n,
+                    PackedZeroPointB,
                     ZeroPointBBuffer,
-                    CountN,
+                    RangeCountN,
                     Shape->BIsSigned);
             }
 
@@ -499,21 +506,16 @@ MlasGemmU8X8AllPackedOperation(
             // Step through each slice of matrix A along the M dimension.
             //
 
-            const auto* b = PackedB + (RangeStartN + n) * KernelType::PackedK * PackedCountK;
-            int32_t* c = C + n;
-            size_t CountM;
+            const auto* b = PackedB + RangeStartN * KernelType::PackedK * PackedCountK;
+            int32_t* c = C;
 
-            for (size_t m = 0; m < RangeCountM; m += CountM) {
+            {
 
-                CountM = std::min(RangeCountM - m, Strides.M);
 
                 const typename KernelType::PackedAType* pa =
-                    PackedA +
-                    (RangeStartM + m) * KernelType::PackedK * PackedCountK;
+                    PackedA + RangeStartM * KernelType::PackedK * PackedCountK;
 
                 if (k == 0) {
-                    while (!TryPackA<KernelType>(Shape, Data, m + RangeStartM, CountM)) {
-                    }
                     //
                     // Apply the global depth value constant without the ZeroPointB scaling from:
                     //
@@ -529,8 +531,8 @@ MlasGemmU8X8AllPackedOperation(
                     // SUM(A[i] * B[i]) - SUM(B[i]) * ZeroPointA - (SUM(A[i]) - K * ZeroPointA)
                     // * ZeroPointB
 
-                    for (size_t mm = 0; mm < CountM; mm++) {
-                        RowSumBuffer[mm] = PackedRowSumBuffer[m+mm] - int32_t(K) * ZeroPointA;
+                    for (size_t mm = 0; mm < RangeCountM; mm++) {
+                        RowSumBuffer[mm] = PackedRowSumBuffer[mm] - int32_t(K) * ZeroPointA;
                     }
 
                     //
@@ -538,7 +540,7 @@ MlasGemmU8X8AllPackedOperation(
                     //
 
                     if (PackedZeroPointB == nullptr) {
-                        MlasGemmU8X8ScaleSumBuffer(RowSumBuffer, CountM, -ZeroPointB);
+                        MlasGemmU8X8ScaleSumBuffer(RowSumBuffer, RangeCountM, -ZeroPointB);
                     }
                 }
                 //
@@ -546,7 +548,7 @@ MlasGemmU8X8AllPackedOperation(
                 //
 
                 int32_t* RowSums = RowSumBuffer;
-                size_t RowsRemaining = CountM;
+                size_t RowsRemaining = RangeCountM;
 
                 bool ZeroMode = (k == 0);
                 bool PostProcess = (k + CountK == K);
@@ -559,7 +561,7 @@ MlasGemmU8X8AllPackedOperation(
                         c,
                         PackedCountK,
                         RowsRemaining,
-                        CountN,
+                        RangeCountN,
                         ldc,
                         RowSums,
                         ColumnSumBuffer,
@@ -569,10 +571,10 @@ MlasGemmU8X8AllPackedOperation(
                     if (PostProcess && Data->OutputProcessor != nullptr) {
                         Data->OutputProcessor->Process(
                             Data->C,
-                            RangeStartM + m + CountM - RowsRemaining,
-                            RangeStartN + n,
+                            RangeStartM + RangeCountM - RowsRemaining,
+                            RangeStartN,
                             RowsHandled,
-                            CountN,
+                            RangeCountN,
                             Data->ldc);
                     }
 
@@ -588,28 +590,6 @@ MlasGemmU8X8AllPackedOperation(
         PackedB = PackedB + AlignedN * CountK;
     }
 }
-
-template <typename KernelType>
-MLAS_FORCEINLINE size_t
-MlasQGemmPackPanelASize(const MLAS_GEMM_U8X8_STRIDES& Strides)
-{
-    const size_t K = (Strides.K + KernelType::PackedK - 1) & ~(KernelType::PackedK - 1);
-    const size_t PackPanelASize = Strides.M * K * sizeof(typename KernelType::PackedAType);
-
-    return PackPanelASize;
-}
-
-template <typename KernelType>
-MLAS_FORCEINLINE size_t
-MlasQGemmPackPanelBSize(const MLAS_GEMM_U8X8_STRIDES& Strides)
-{
-    const size_t K = (Strides.K + KernelType::PackedK - 1) & ~(KernelType::PackedK - 1);
-    const size_t N = (Strides.N + 15) & ~15;
-    const size_t PackPanelBSize = K * N * sizeof(typename KernelType::PackedBType);
-
-    return PackPanelBSize;
-}
-
 
 
 template <typename KernelType>
@@ -641,6 +621,11 @@ MlasGemmBatchBlockPartition(
     if (StrideN >= (Shape.N - (Shape.N / 4))) {
         StrideN = Shape.N;
     }
+    if (StrideN > 1024) {
+        auto factor = (StrideN + 1023) & ~1023;
+        StrideN /= factor;
+        StrideN = (StrideN + 15) & ~15;
+    }
 
     multipler = unitwork / (StrideM * StrideN * Shape.K);
     multipler = std::max(multipler, size_t(1));
@@ -649,6 +634,12 @@ MlasGemmBatchBlockPartition(
     if (StrideM >= (Shape.M - (Shape.M / 4))) {
         StrideM = Shape.M;
     }
+    if (StrideM > 1024) {
+        auto factor = (StrideM + 1023) & ~1023;
+        StrideM /= factor;
+        StrideM = (StrideM + 47) / 48 * 48;
+    }
+
 
     size_t numJobN = (Shape.N + StrideN - 1) / StrideN;
     size_t numJobM = (Shape.M + StrideM - 1) / StrideM;
@@ -657,37 +648,6 @@ MlasGemmBatchBlockPartition(
     constexpr size_t CacheSize = 256 * 1024;
     constexpr size_t BPanelSize = CacheSize / 3;
     constexpr size_t AllPanelSize = CacheSize * 5 / 8;
-
-    MLAS_GEMM_U8X8_STRIDES Strides;
-    Strides.K = std::min(Shape.K, KernelType::Strides.K);
-
-    // try to find a shape for panel B that fill half cache
-    const size_t AlignKernelStrideK =
-        (Strides.K + KernelType::PackedK - 1) & ~(KernelType::PackedK - 1);
-
-    size_t BStrideLimit =
-        std::min(size_t(1024), BPanelSize / (AlignKernelStrideK * sizeof(KernelType::PackedBType)));
-    if (BStrideLimit >= StrideN) {
-        Strides.N = StrideN;
-    } else {
-        BStrideLimit = BStrideLimit & ~15;
-        auto factor = (StrideN + BStrideLimit - 1) / BStrideLimit;
-        Strides.N = StrideN / factor;
-        Strides.N = (Strides.N + 15) / 16 * 16;
-    }
-
-    const size_t AlignKernelStrideN = (Strides.N + 15) & ~15;
-    size_t AStrideLimit =
-        std::min(size_t(1024), (AllPanelSize - MlasQGemmPackPanelBSize<KernelType>(Strides)) /
-                                   (AlignKernelStrideK * sizeof(KernelType::PackedAType)));
-    if (AStrideLimit >= StrideM) {
-        Strides.M = StrideM;
-    } else {
-        AStrideLimit -= (AStrideLimit % 48);
-        auto factor = (StrideM + AStrideLimit - 1) / AStrideLimit;
-        Strides.M = StrideM / factor;
-        Strides.M = (Strides.M + 47) / 48 * 48;
-    }
 
     //  zero out packing status if original inputs or prepacking lambda is present.
     for (size_t batchIdx = 0; batchIdx < BatchN; batchIdx++) {
@@ -698,19 +658,15 @@ MlasGemmBatchBlockPartition(
         if (data.A) {
             MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedA, Shape.M, SumBuffer, Packed);
             for (size_t m = 0; m < Shape.M; m += StrideM) {
-                for (size_t mm = 0; mm < StrideM && m + mm < Shape.M; mm += Strides.M) {
-                    uint64_t* PackStatus = (uint64_t*)(SumBuffer + m + mm);
+                    uint64_t* PackStatus = (uint64_t*)(SumBuffer + m);
                     *PackStatus = PackStatusNotStarted;
-                }
             }
         }
         if (data.B) {
             MlasGetSumValBufFromPackedMutable<uint8_t>(data.PackedB, Shape.N, SumBuffer, Packed);
             for (size_t n = 0; n < Shape.N; n += StrideN) {
-                for (size_t nn = 0; nn < StrideN && n + nn < Shape.N; nn += Strides.N) {
-                    uint64_t* PackStatus = (uint64_t*)(SumBuffer + n + nn);
+                    uint64_t* PackStatus = (uint64_t*)(SumBuffer + n);
                     *PackStatus = PackStatusNotStarted;
-                }
             }
         }
     }
@@ -721,7 +677,7 @@ MlasGemmBatchBlockPartition(
 
         const auto m_idx = blk_i % numJobM;
         const auto n_idx = blk_i / numJobM;
-        MlasGemmU8X8AllPackedOperation<KernelType>(&Shape, &(DataParams[gemm_i]), Strides,
+        MlasGemmU8X8AllPackedOperation<KernelType>(&Shape, &(DataParams[gemm_i]),
                                                    m_idx * StrideM, StrideM, n_idx * StrideN,
                                                    StrideN);
     });
@@ -1986,7 +1942,7 @@ struct MLAS_GEMM_U8S8_KERNEL_AVX2
     typedef int8_t OffsetBType;
 
     static constexpr size_t PackedK = 4;
-    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{48, 256, 384};
+    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{48, 256, 768};
 };
 
 constexpr size_t MLAS_GEMM_U8S8_KERNEL_AVX2::PackedK;
@@ -2099,7 +2055,7 @@ struct MLAS_GEMM_U8U8_KERNEL_AVX2
     typedef uint8_t OffsetBType;
 
     static constexpr size_t PackedK = 2;
-    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{48, 256, 384};
+    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{48, 256, 768};
 };
 
 constexpr size_t MLAS_GEMM_U8U8_KERNEL_AVX2::PackedK;
