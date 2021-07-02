@@ -91,6 +91,8 @@ BENCHMARK(BM_FindMinMaxMlasSSE2)
     ->Arg(98304)
     ->Arg(160000);
 
+#if (defined(_M_AMD64) && !defined(_M_ARM64EC)) || defined(__x86_64__)
+
 // MLAS avx implementation
 static void BM_FindMinMaxMlasAvx(benchmark::State& state) {
   const size_t batch_size = static_cast<size_t>(state.range(0));
@@ -116,3 +118,4 @@ BENCHMARK(BM_FindMinMaxMlasAvx)
     ->Arg(98304)
     ->Arg(160000);
 
+#endif
