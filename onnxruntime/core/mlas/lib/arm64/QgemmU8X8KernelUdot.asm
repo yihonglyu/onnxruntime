@@ -109,7 +109,6 @@ Return Value:
 //
 // Process 4 rows of the matrices.
 //
-// v8 ~ v11 row sums 
 
 //
 // The packing layout is setup to have a pair of four quad vectors from
@@ -128,32 +127,37 @@ Return Value:
 // packed matrix A. At the time of this implementation, using a wider 128-bit
 // load didn't affect performance for higher end cores.
 //
+// 4 row of  Row Sums 
+// v8.4s
+// v9.4s
+// v10.4s
+// v11.4s
 //                                      int8 RHS 4x8 block
-//                           /-----------------------------------------|
-//                           |v0.b[0] ... v0.b[12] v1.b[0] ... v1.b[12]|
-//                           |  ...                              ...   |
-//                           |v0.b[3] ... v0.b[15] v1.b[3] ... v1.b[15]|
-//                           \-----------------------------------------/
+//                           /-----------------------------------------\ /-------------------------------------------\
+//                           |v0.b[0] ... v0.b[12] v1.b[0] ... v1.b[12]| |v12.b[0] .. v12.b[12] v13.b[0] .. v13.b[12]|
+//                           |  ...                              ...   | |  ...                              ...     |
+//                           |v0.b[3] ... v0.b[15] v1.b[3] ... v1.b[15]| |v12.b[3] .. v12.b[15] v13.b[3] .. v13.b[15]|
+//                           \-----------------------------------------/ \-------------------------------------------/
 //    int8 LHS 4x4 block
-//  /---------------------\  /-----------------------------------------|
-//  |d4.b[0]  ... d4.b[3] |  |v16.s[0] .. v16.s[3] v17.s[0] .. v17.s[3]|
-//  |d4.b[4]  ... d4.b[7] |  |v18.s[0] .. v18.s[3] v19.s[0] .. v19.s[3]|
-//  |d5.b[0]  ... d5.b[3] |  |v20.s[0] .. v20.s[3] v21.s[0] .. v21.s[3]|
-//  |d5.b[4]  ... d5.b[7] |  |v22.s[0] .. v22.s[3] v23.s[0] .. v23.s[3]|
-//  \---------------------/  \-----------------------------------------/
+//  /---------------------\  /-----------------------------------------\ /------------------------------------------\
+//  |d4.b[0]  ... d4.b[3] |  |v16.s[0] .. v16.s[3] v17.s[0] .. v17.s[3]| |v24.s[0] .. v24.s[3]  v25.s[0] .. v25.s[3]|
+//  |d4.b[4]  ... d4.b[7] |  |v18.s[0] .. v18.s[3] v19.s[0] .. v19.s[3]| |v26.s[0] .. v26.s[3]  v27.s[0] .. v27.s[3]|
+//  |d5.b[0]  ... d5.b[3] |  |v20.s[0] .. v20.s[3] v21.s[0] .. v21.s[3]| |v28.s[0] .. v28.s[3]  v29.s[0] .. v29.s[3]|
+//  |d5.b[4]  ... d5.b[7] |  |v22.s[0] .. v22.s[3] v23.s[0] .. v23.s[3]| |v30.s[0] .. v30.s[3]  v31.s[0] .. v31.s[3]|
+//  \---------------------/  \-----------------------------------------/ \------------------------------------------/
 //////////////////////////
 //  unroll for the next 4 in k dimension
-//                           /-----------------------------------------|
-//                           |v2.b[0] ... v2.b[12] v3.b[0] ... v3.b[12]|
-//                           |  ...                              ...   |
-//                           |v2.b[3] ... v2.b[15] v3.b[3] ... v3.b[15]|
-//                           \-----------------------------------------/
-//  /---------------------\  /-----------------------------------------\
-//  |d6.b[0]  ... d6.b[3] |  |v16.s[0] .. v16.s[3] v17.s[0] .. v17.s[3]|
-//  |d6.b[4]  ... d6.b[7] |  |v18.s[0] .. v18.s[3] v19.s[0] .. v19.s[3]|
-//  |d7.b[0]  ... d7.b[3] |  |v20.s[0] .. v20.s[3] v21.s[0] .. v21.s[3]|
-//  |d7.b[4]  ... d7.b[7] |  |v22.s[0] .. v22.s[3] v23.s[0] .. v23.s[3]|
-//  \---------------------/  \-----------------------------------------/
+//                           /-----------------------------------------| /-------------------------------------------\
+//                           |v2.b[0] ... v2.b[12] v3.b[0] ... v3.b[12]| |v14.b[0] .. v14.b[12] v15.b[0] .. v15.b[12]|
+//                           |  ...                              ...   | |  ...                              ...     |
+//                           |v2.b[3] ... v2.b[15] v3.b[3] ... v3.b[15]| |v14.b[3] .. v14.b[15] v15.b[3] .. v15.b[15]|
+//                           \-----------------------------------------/ \-------------------------------------------/
+//  /---------------------\  /-----------------------------------------\ /------------------------------------------\
+//  |d6.b[0]  ... d6.b[3] |  |v16.s[0] .. v16.s[3] v17.s[0] .. v17.s[3]| |v24.s[0] .. v24.s[3]  v25.s[0] .. v25.s[3]|
+//  |d6.b[4]  ... d6.b[7] |  |v18.s[0] .. v18.s[3] v19.s[0] .. v19.s[3]| |v26.s[0] .. v26.s[3]  v27.s[0] .. v27.s[3]|
+//  |d7.b[0]  ... d7.b[3] |  |v20.s[0] .. v20.s[3] v21.s[0] .. v21.s[3]| |v28.s[0] .. v28.s[3]  v29.s[0] .. v29.s[3]|
+//  |d7.b[4]  ... d7.b[7] |  |v22.s[0] .. v22.s[3] v23.s[0] .. v23.s[3]| |v30.s[0] .. v30.s[3]  v31.s[0] .. v31.s[3]|
+//  \---------------------/  \-----------------------------------------/ \------------------------------------------/
 //                                  int32 accumulators 8x8 block
 
 // Starting the loop: for each 4 colomns
@@ -162,6 +166,8 @@ ProcessNextColumnLoopM4
         ld1     {v0.4s},[x8],#16            // load ColumnSumBuffer[0]
         mov     x3,x15                      // reload PackedCountK
         ld1     {v1.4s},[x8],#16            // load ColumnSumBuffer[4]
+        ld1     {v2.4s},[x8],#16            // load ColumnSumBuffer[8]
+        ld1     {v3.4s},[x8],#16            // load ColumnSumBuffer[12]
         cbz     x9,SkipScaleByZeroPointBM4
 
         // accumulator = zero point B * row sum A + column sum B 
@@ -175,6 +181,17 @@ ProcessNextColumnLoopM4
         mul     v19.4s,v23.4s,v9.4s
         mul     v21.4s,v23.4s,v10.4s
         mul     v23.4s,v23.4s,v11.4s
+        ld1     {v30.4s},[x9],#16           // load ZeroPointB[8]
+        ld1     {v31.4s},[x9],#16           // load ZeroPointB[12]
+        mul     v24.4s,v30.4s,v8.4s
+        mul     v26.4s,v30.4s,v9.4s
+        mul     v28.4s,v30.4s,v10.4s
+        mul     v30.4s,v30.4s,v11.4s
+        mul     v25.4s,v31.4s,v8.4s
+        mul     v27.4s,v31.4s,v9.4s
+        mul     v29.4s,v31.4s,v10.4s
+        mul     v31.4s,v31.4s,v11.4s
+
         add     v16.4s,v0.4s,v16.4s
         add     v18.4s,v0.4s,v18.4s
         add     v20.4s,v0.4s,v20.4s
@@ -183,6 +200,14 @@ ProcessNextColumnLoopM4
         add     v19.4s,v1.4s,v19.4s
         add     v21.4s,v1.4s,v21.4s
         add     v23.4s,v1.4s,v23.4s
+        add     v24.4s,v2.4s,v24.4s
+        add     v26.4s,v2.4s,v26.4s
+        add     v28.4s,v2.4s,v28.4s
+        add     v30.4s,v2.4s,v30.4s
+        add     v25.4s,v3.4s,v25.4s
+        add     v27.4s,v3.4s,v27.4s
+        add     v29.4s,v3.4s,v29.4s
+        add     v31.4s,v3.4s,v31.4s
         b       ComputeBlockLoopStartM4
 
 SkipScaleByZeroPointBM4
@@ -195,7 +220,14 @@ SkipScaleByZeroPointBM4
         add     v19.4s,v1.4s,v9.4s
         add     v21.4s,v1.4s,v10.4s
         add     v23.4s,v1.4s,v11.4s
-
+        add     v24.4s,v2.4s,v8.4s
+        add     v26.4s,v2.4s,v9.4s
+        add     v28.4s,v2.4s,v10.4s
+        add     v30.4s,v2.4s,v11.4s
+        add     v25.4s,v3.4s,v8.4s
+        add     v27.4s,v3.4s,v9.4s
+        add     v29.4s,v3.4s,v10.4s
+        add     v31.4s,v3.4s,v11.4s
 
 ComputeBlockLoopStartM4
         ld1     {v0.16b},[x1],#16           // load packed B0
@@ -203,11 +235,16 @@ ComputeBlockLoopStartM4
         ld1     {v1.16b},[x1],#16           // load packed B1
         ldur    d5,[x0,#-24]                // load packed A0.h
         ldur    d6,[x0,#-16]                // load packed A1.l
+        ld1     {v12.16b},[x1],#16          // load packed B2
+        ld1     {v13.16b},[x1],#16          // load packed B3
+
         ld1     {v2.16b},[x1],#16           // load packed B0_next4k
         ld1     {v3.16b},[x1],#16           // load packed B1_next4k
+        ld1     {v14.16b},[x1],#16          // load packed B2_next4k
 
 ComputeBlockLoopM4
         sub     x3,x3,#1
+        ld1     {v15.16b},[x1],#16          // load packed B3_next4k
         UdotByElement 16, 0, 4, 0
         UdotByElement 18, 0, 4, 1
         ldur    d7,[x0,#-8]                 // load packed A1.h
@@ -217,10 +254,22 @@ ComputeBlockLoopM4
         ld1     {v0.16b},[x1],#16           // load packed B0 for next iteration
         UdotByElement 17, 1, 4, 0
         UdotByElement 19, 1, 4, 1
-        ldr     d4,[x0],#32                 // load packed A0.l for next iteration
         UdotByElement 21, 1, 5, 0
         UdotByElement 23, 1, 5, 1
         ld1     {v1.16b},[x1],#16           // load packed B1 for next iteration
+
+        UdotByElement 24, 12, 4, 0
+        UdotByElement 26, 12, 4, 1
+        UdotByElement 28, 12, 5, 0
+        UdotByElement 30, 12, 5, 1
+        ld1     {v12.16b},[x1],#16          // load packed B2 for next iteration
+        UdotByElement 25, 13, 4, 0
+        UdotByElement 27, 13, 4, 1
+        ldr     d4,[x0],#32                 // load packed A0.l for next iteration
+        UdotByElement 29, 13, 5, 0
+        UdotByElement 31, 13, 5, 1
+        ld1     {v13.16b},[x1],#16          // load packed B3 for next iteration
+
         UdotByElement 16, 2, 6, 0
         UdotByElement 18, 2, 6, 1
         ldur    d5,[x0,#-24]                // load packed A0.h for next iteration
@@ -229,10 +278,20 @@ ComputeBlockLoopM4
         ld1     {v2.16b},[x1],#16           // load packed B0_next4k for next iteration
         UdotByElement 17, 3, 6, 0
         UdotByElement 19, 3, 6, 1
-        ldur    d6,[x0,#-16]                // load packed A1.l for next iteration
         UdotByElement 21, 3, 7, 0
         UdotByElement 23, 3, 7, 1
         ld1     {v3.16b},[x1],#16           // load packed B1_next4k for next iteration
+
+        UdotByElement 24, 14, 6, 0
+        UdotByElement 26, 14, 6, 1
+        UdotByElement 28, 14, 7, 0
+        UdotByElement 30, 14, 7, 1
+        ld1     {v14.16b},[x1],#16          // load packed B2_next4k for next iteration
+        UdotByElement 25, 15, 6, 0
+        UdotByElement 27, 15, 6, 1
+        ldur    d6,[x0,#-16]                // load packed A1.l for next iteration
+        UdotByElement 29, 15, 7, 0
+        UdotByElement 31, 15, 7, 1
         b       ComputeBlockLoopM4
 
 ComputeBlockLoopFinishM4
@@ -240,6 +299,14 @@ ComputeBlockLoopFinishM4
         UdotByElement 19, 1, 4, 1
         UdotByElement 21, 1, 5, 0
         UdotByElement 23, 1, 5, 1
+        UdotByElement 24, 12, 4, 0
+        UdotByElement 26, 12, 4, 1
+        UdotByElement 28, 12, 5, 0
+        UdotByElement 30, 12, 5, 1
+        UdotByElement 25, 13, 4, 0
+        UdotByElement 27, 13, 4, 1
+        UdotByElement 29, 13, 5, 0
+        UdotByElement 31, 13, 5, 1
         UdotByElement 16, 2, 6, 0
         UdotByElement 18, 2, 6, 1
         UdotByElement 20, 2, 7, 0
@@ -248,10 +315,18 @@ ComputeBlockLoopFinishM4
         UdotByElement 19, 3, 6, 1
         UdotByElement 21, 3, 7, 0
         UdotByElement 23, 3, 7, 1
+        UdotByElement 24, 14, 6, 0
+        UdotByElement 26, 14, 6, 1
+        UdotByElement 28, 14, 7, 0
+        UdotByElement 30, 14, 7, 1
+        UdotByElement 25, 15, 6, 0
+        UdotByElement 27, 15, 6, 1
+        UdotByElement 29, 15, 7, 0
+        UdotByElement 31, 15, 7, 1
         add     x10,x2,x6,lsl #2            // compute output row 2
         add     x11,x10,x6,lsl #2           // compute output row 3
         add     x12,x11,x6,lsl #2           // compute output row 4
-        subs    x5,x5,#8                    // adjust CountN remaining
+        subs    x5,x5,#16                   // adjust CountN remaining
         blo     StoreOutputPartialM4
         cbnz    x13,SkipAccumulateOutputM4
         ldp     q0,q1,[x2]
@@ -264,14 +339,30 @@ ComputeBlockLoopFinishM4
         ldp     q6,q7,[x12]
         add     v20.4s,v20.4s,v4.4s
         add     v21.4s,v21.4s,v5.4s
+        ldp     q0,q1,[x2,#32]
         add     v22.4s,v22.4s,v6.4s
         add     v23.4s,v23.4s,v7.4s
+        ldp     q2,q3,[x10,#32]
+        add     v24.4s,v24.4s,v0.4s
+        add     v25.4s,v25.4s,v1.4s
+        ldp     q4,q5,[x11,#32]
+        add     v26.4s,v26.4s,v2.4s
+        add     v27.4s,v27.4s,v3.4s
+        ldp     q6,q7,[x12,#32]
+        add     v28.4s,v28.4s,v4.4s
+        add     v29.4s,v29.4s,v5.4s
+        add     v30.4s,v30.4s,v6.4s
+        add     v31.4s,v31.4s,v7.4s
 
 SkipAccumulateOutputM4
         stp     q16,q17,[x2],#32
-        stp     q18,q19,[x10]
-        stp     q20,q21,[x11]
-        stp     q22,q23,[x12]
+        stp     q18,q19,[x10],#32
+        stp     q20,q21,[x11],#32
+        stp     q22,q23,[x12],#32
+        stp     q24,q25,[x2],#32
+        stp     q26,q27,[x10]
+        stp     q28,q29,[x11]
+        stp     q30,q31,[x12]
         cbnz    x5,ProcessNextColumnLoopM4
 
 ExitKernelM4
@@ -283,7 +374,7 @@ ExitKernelM4
         EPILOG_RETURN
 
 //
-// Store the partial 1 to 7 columns either overwriting the output matrix or
+// Store the partial 1 to 15 columns either overwriting the output matrix or
 // accumulating into the existing contents of the output matrix.
 //
 
@@ -291,6 +382,21 @@ StoreOutputPartialM4
         cbz     x13,StoreOutputPartialAddModeM4
 
 StoreOutputPartialZeroModeM4
+        tbz     x5,#3,StoreOutputPartial4ZeroModeM4
+        stp     q16,q17,[x2],#32
+        mov     v16.16b,v24.16b             // shift remaining elements down
+        mov     v17.16b,v25.16b
+        stp     q18,q19,[x10],#32
+        mov     v18.16b,v26.16b
+        mov     v19.16b,v27.16b
+        stp     q20,q21,[x11],#32
+        mov     v20.16b,v28.16b 
+        mov     v21.16b,v29.16b
+        stp     q22,q23,[x12],#32
+        mov     v22.16b,v30.16b
+        mov     v23.16b,v31.16b
+
+StoreOutputPartial4ZeroModeM4
         tbz     x5,#2,StoreOutputPartial2ZeroModeM4
         st1     {v16.4s},[x2],#16
         mov     v16.16b,v17.16b             // shift remaining elements down
@@ -321,6 +427,34 @@ StoreOutputPartial1ZeroModeM4
         b       ExitKernelM4
 
 StoreOutputPartialAddModeM4
+        tbz     x5,#2,StoreOutputPartial4AddModeM4
+        ldp     q0,q1,[x2]
+        ldp     q2,q3,[x10]
+        add     v16.4s,v16.4s,v0.4s
+        add     v17.4s,v17.4s,v1.4s
+        ldp     q4,q5,[x11]
+        add     v18.4s,v18.4s,v2.4s
+        add     v19.4s,v19.4s,v3.4s
+        ldp     q6,q7,[x12]
+        add     v20.4s,v20.4s,v4.4s
+        add     v21.4s,v21.4s,v5.4s
+        add     v22.4s,v22.4s,v6.4s
+        add     v23.4s,v23.4s,v7.4s
+        stp     q16,q17,[x2],#32
+        mov     v16.16b,v24.16b             // shift remaining elements down
+        mov     v17.16b,v25.16b
+        stp     q18,q19,[x10],#32
+        mov     v18.16b,v26.16b
+        mov     v19.16b,v27.16b
+        stp     q20,q21,[x11],#32
+        mov     v20.16b,v28.16b 
+        mov     v21.16b,v29.16b
+        stp     q22,q23,[x12],#32
+        mov     v22.16b,v30.16b
+        mov     v23.16b,v31.16b
+
+
+StoreOutputPartial4AddModeM4
         tbz     x5,#2,StoreOutputPartial2AddModeM4
         ld1     {v0.4s},[x2]
         ld1     {v1.4s},[x10]
