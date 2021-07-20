@@ -198,25 +198,24 @@ ProcessNextColumnLoopM4
 
         add     v16.4s,v0.4s,v16.4s
         add     v18.4s,v0.4s,v18.4s
-        ldr     d4,[x0],#32                 // load packed A0.l
+        ldr     q4,[x0],#32                 // load packed A0
         add     v20.4s,v0.4s,v20.4s
         add     v22.4s,v0.4s,v22.4s
-        ldur    d5,[x0,#-24]                // load packed A0.h
+        ld1     {v0.16b},[x1],#16           // load packed B0
         add     v17.4s,v1.4s,v17.4s
         add     v19.4s,v1.4s,v19.4s
-        ld1     {v0.16b},[x1],#16           // load packed B0
+        ld1     {v1.16b},[x1],#16           // load packed B1
         add     v21.4s,v1.4s,v21.4s
         add     v23.4s,v1.4s,v23.4s
-        ld1     {v1.16b},[x1],#16           // load packed B1
+        ld1     {v12.16b},[x1],#16          // load packed B2
         add     v24.4s,v2.4s,v24.4s
         add     v26.4s,v2.4s,v26.4s
-        ld1     {v12.16b},[x1],#16          // load packed B2
+        ld1     {v13.16b},[x1],#16          // load packed B3
         add     v28.4s,v2.4s,v28.4s
         add     v30.4s,v2.4s,v30.4s
-        ld1     {v13.16b},[x1],#16          // load packed B3
         add     v25.4s,v3.4s,v25.4s
         add     v27.4s,v3.4s,v27.4s
-        ldur    d6,[x0,#-16]                // load packed A1.l
+        ld1     {v2.16b},[x1],#16           // load packed B0_next4k
         add     v29.4s,v3.4s,v29.4s
         add     v31.4s,v3.4s,v31.4s
         b       ComputeBlockLoopStartM4
@@ -225,110 +224,106 @@ SkipScaleByZeroPointBM4
         // accumulator = row sum A + column sum B 
         add     v16.4s,v0.4s,v8.4s
         add     v18.4s,v0.4s,v9.4s
-        ldr     d4,[x0],#32                 // load packed A0.l
+        ldr     q4,[x0],#32                 // load packed A0
         add     v20.4s,v0.4s,v10.4s
         add     v22.4s,v0.4s,v11.4s
-        ldur    d5,[x0,#-24]                // load packed A0.h
+        ld1     {v0.16b},[x1],#16           // load packed B0
         add     v17.4s,v1.4s,v8.4s
         add     v19.4s,v1.4s,v9.4s
-        ld1     {v0.16b},[x1],#16           // load packed B0
+        ld1     {v1.16b},[x1],#16           // load packed B1
         add     v21.4s,v1.4s,v10.4s
         add     v23.4s,v1.4s,v11.4s
-        ld1     {v1.16b},[x1],#16           // load packed B1
+        ld1     {v12.16b},[x1],#16          // load packed B2
         add     v24.4s,v2.4s,v8.4s
         add     v26.4s,v2.4s,v9.4s
-        ld1     {v12.16b},[x1],#16          // load packed B2
+        ld1     {v13.16b},[x1],#16          // load packed B3
         add     v28.4s,v2.4s,v10.4s
         add     v30.4s,v2.4s,v11.4s
-        ld1     {v13.16b},[x1],#16          // load packed B3
         add     v25.4s,v3.4s,v8.4s
         add     v27.4s,v3.4s,v9.4s
-        ldur    d6,[x0,#-16]                // load packed A1.l
+        ld1     {v2.16b},[x1],#16           // load packed B0_next4k
         add     v29.4s,v3.4s,v10.4s
         add     v31.4s,v3.4s,v11.4s
 
 ComputeBlockLoopStartM4
 
-        ld1     {v2.16b},[x1],#16           // load packed B0_next4k
 
 ComputeBlockLoopM4
         sub     x3,x3,#1
-        ldur    d7,[x0,#-8]                 // load packed A1.h
+        ldur    q6,[x0,#-16]                // load packed A1
         UdotByElement 16, 0, 4, 0
         UdotByElement 18, 0, 4, 1
         ld1     {v3.16b},[x1],#16           // load packed B1_next4k
-        UdotByElement 20, 0, 5, 0
-        UdotByElement 22, 0, 5, 1
+        UdotByElement 20, 0, 4, 2
+        UdotByElement 22, 0, 4, 3
 
         ld1     {v14.16b},[x1],#16          // load packed B2_next4k
         UdotByElement 17, 1, 4, 0
         UdotByElement 19, 1, 4, 1
         ld1     {v15.16b},[x1],#16          // load packed B3_next4k
-        UdotByElement 21, 1, 5, 0
-        UdotByElement 23, 1, 5, 1
+        UdotByElement 21, 1, 4, 2
+        UdotByElement 23, 1, 4, 3
         cbz     x3,ComputeBlockLoopFinishM4
         ld1     {v0.16b},[x1],#16           // load packed B0 for next iteration
 
         UdotByElement 24, 12, 4, 0
         UdotByElement 26, 12, 4, 1
         ld1     {v1.16b},[x1],#16           // load packed B1 for next iteration
-        UdotByElement 28, 12, 5, 0
-        UdotByElement 30, 12, 5, 1
+        UdotByElement 28, 12, 4, 2
+        UdotByElement 30, 12, 4, 3
         ld1     {v12.16b},[x1],#16          // load packed B2 for next iteration
         UdotByElement 25, 13, 4, 0
         UdotByElement 27, 13, 4, 1
-        ldr     d4,[x0],#32                 // load packed A0.l for next iteration
-        UdotByElement 29, 13, 5, 0
-        UdotByElement 31, 13, 5, 1
-        ldur    d5,[x0,#-24]                // load packed A0.h for next iteration
+        UdotByElement 29, 13, 4, 2
+        UdotByElement 31, 13, 4, 3
+        ldr     q4,[x0],#32                 // load packed A0 for next iteration
 
         UdotByElement 16, 2, 6, 0
         UdotByElement 18, 2, 6, 1
         ld1     {v13.16b},[x1],#16          // load packed B3 for next iteration
-        UdotByElement 20, 2, 7, 0
-        UdotByElement 22, 2, 7, 1
+        UdotByElement 20, 2, 6, 2
+        UdotByElement 22, 2, 6, 3
         UdotByElement 17, 3, 6, 0
         UdotByElement 19, 3, 6, 1
-        UdotByElement 21, 3, 7, 0
-        UdotByElement 23, 3, 7, 1
+        UdotByElement 21, 3, 6, 2
+        UdotByElement 23, 3, 6, 3
         ld1     {v2.16b},[x1],#16           // load packed B0_next4k for next iteration
 
         UdotByElement 24, 14, 6, 0
         UdotByElement 26, 14, 6, 1
-        UdotByElement 28, 14, 7, 0
-        UdotByElement 30, 14, 7, 1
+        UdotByElement 28, 14, 6, 2
+        UdotByElement 30, 14, 6, 3
         UdotByElement 25, 15, 6, 0
         UdotByElement 27, 15, 6, 1
-        ldur    d6,[x0,#-16]                // load packed A1.l for next iteration
-        UdotByElement 29, 15, 7, 0
-        UdotByElement 31, 15, 7, 1
+        UdotByElement 29, 15, 6, 2
+        UdotByElement 31, 15, 6, 3
         b       ComputeBlockLoopM4
 
 ComputeBlockLoopFinishM4
         UdotByElement 24, 12, 4, 0
         UdotByElement 26, 12, 4, 1
-        UdotByElement 28, 12, 5, 0
-        UdotByElement 30, 12, 5, 1
+        UdotByElement 28, 12, 4, 2
+        UdotByElement 30, 12, 4, 3
         UdotByElement 25, 13, 4, 0
         UdotByElement 27, 13, 4, 1
-        UdotByElement 29, 13, 5, 0
-        UdotByElement 31, 13, 5, 1
+        UdotByElement 29, 13, 4, 2
+        UdotByElement 31, 13, 4, 3
         UdotByElement 16, 2, 6, 0
         UdotByElement 18, 2, 6, 1
-        UdotByElement 20, 2, 7, 0
-        UdotByElement 22, 2, 7, 1
+        UdotByElement 20, 2, 6, 2
+        UdotByElement 22, 2, 6, 3
         UdotByElement 17, 3, 6, 0
         UdotByElement 19, 3, 6, 1
-        UdotByElement 21, 3, 7, 0
-        UdotByElement 23, 3, 7, 1
+        UdotByElement 21, 3, 6, 2
+        UdotByElement 23, 3, 6, 3
         UdotByElement 24, 14, 6, 0
         UdotByElement 26, 14, 6, 1
-        UdotByElement 28, 14, 7, 0
-        UdotByElement 30, 14, 7, 1
+        UdotByElement 28, 14, 6, 2
+        UdotByElement 30, 14, 6, 3
         UdotByElement 25, 15, 6, 0
         UdotByElement 27, 15, 6, 1
-        UdotByElement 29, 15, 7, 0
-        UdotByElement 31, 15, 7, 1
+        UdotByElement 29, 15, 6, 2
+        UdotByElement 31, 15, 6, 3
         add     x10,x2,x6,lsl #2            // compute output row 2
         add     x11,x10,x6,lsl #2           // compute output row 3
         add     x12,x11,x6,lsl #2           // compute output row 4
