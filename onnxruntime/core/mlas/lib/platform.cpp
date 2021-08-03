@@ -352,7 +352,8 @@ Return Value:
     bool HasDotProductInstructions;
 
 #if defined(_WIN32)
-    HasDotProductInstructions = (IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) != 0);
+    HasDotProductInstructions = true;
+    //(IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) != 0);
 #elif defined(__linux__)
     HasDotProductInstructions = ((getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0);
 #else
