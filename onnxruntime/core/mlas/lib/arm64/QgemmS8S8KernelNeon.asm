@@ -150,11 +150,12 @@ GemmS8S8_M4_ComputeBlockLoop
         smull   v13.8h,v0.8b,v5.8b
         smull   v14.8h,v0.8b,v6.8b
         smull   v15.8h,v0.8b,v7.8b
+        ldur    d0,[x0,#-32]
         smlal   v12.8h,v2.8b,v8.8b
         smlal   v13.8h,v2.8b,v9.8b
         smlal   v14.8h,v2.8b,v10.8b
         smlal   v15.8h,v2.8b,v11.8b
-        ldp     d0,d2,[x0,#-32]
+        ldur    d2,[x0,#-24]
         sadalp  v16.4s,v12.8h
         sadalp  v17.4s,v13.8h
         sadalp  v18.4s,v14.8h
@@ -164,11 +165,12 @@ GemmS8S8_M4_ComputeBlockLoop
         smull   v13.8h,v1.8b,v5.8b
         smull   v14.8h,v1.8b,v6.8b
         smull   v15.8h,v1.8b,v7.8b
+        ldur    d1,[x0,#-16]
         smlal   v12.8h,v3.8b,v8.8b
         smlal   v13.8h,v3.8b,v9.8b
         smlal   v14.8h,v3.8b,v10.8b
         smlal   v15.8h,v3.8b,v11.8b
-        ldp     d1,d3,[x0,#-16]
+        ldur    d3,[x0,#-8]
         sadalp  v20.4s,v12.8h
         sadalp  v21.4s,v13.8h
         sadalp  v22.4s,v14.8h
@@ -178,29 +180,35 @@ GemmS8S8_M4_ComputeBlockLoop
         smull   v13.8h,v0.8b,v5.8b
         smull   v14.8h,v0.8b,v6.8b
         smull   v15.8h,v0.8b,v7.8b
+        ldr     d0,[x0],#64
         smlal   v12.8h,v2.8b,v8.8b
         smlal   v13.8h,v2.8b,v9.8b
         smlal   v14.8h,v2.8b,v10.8b
         smlal   v15.8h,v2.8b,v11.8b
-        ldp     d0,d2,[x0],#64
+        ldur    d2,[x0,#-56]
         sadalp  v24.4s,v12.8h
         sadalp  v25.4s,v13.8h
         sadalp  v26.4s,v14.8h
         sadalp  v27.4s,v15.8h
         smull   v12.8h,v1.8b,v4.8b
+        ldr    d4,[x1],#64                    // B
         smull   v13.8h,v1.8b,v5.8b
+        ldur    d5,[x1,#-48]
         smull   v14.8h,v1.8b,v6.8b
+        ldur    d6,[x1,#-32]
         smull   v15.8h,v1.8b,v7.8b
+        ldur    d7,[x1,#-16]
+        ldur    d1,[x0,#-48]
         smlal   v12.8h,v3.8b,v8.8b
-        ldp     d4,d8,[x1],#64                 // B
+        ldur    d8,[x1,#-56]                   // B
         smlal   v13.8h,v3.8b,v9.8b
-        ldp     d5,d9,[x1,#-48]
+        ldur    d9,[x1,#-40]
         smlal   v14.8h,v3.8b,v10.8b
-        ldp     d6,d10,[x1,#-32]
+        ldur    d10,[x1,#-24]
         smlal   v15.8h,v3.8b,v11.8b
-        ldp     d7,d11,[x1,#-16]
+        ldur    d11,[x1,#-8]
+        ldur    d3,[x0,#-40]
         sadalp  v28.4s,v12.8h
-        ldp     d1,d3,[x0,#-48]
         sadalp  v29.4s,v13.8h
         sadalp  v30.4s,v14.8h
         sadalp  v31.4s,v15.8h
@@ -427,30 +435,36 @@ GemmS8S8_M2_ComputeBlockLoop
         smull   v30.8h,v0.8b,v6.8b
         smull   v31.8h,v0.8b,v7.8b
         cbz     x3,GemmS8S8_M2_ComputeBlockLoopFinish
+        ldr     d0,[x0],#8                  // A0 low
         smlal   v28.8h,v2.8b,v24.8b
         smlal   v29.8h,v2.8b,v25.8b
         smlal   v30.8h,v2.8b,v26.8b
         smlal   v31.8h,v2.8b,v27.8b
-        ldp     d0,d2,[x0],#16              // A0
+        ldr     d2,[x0],#8                  // A0 high
         sadalp  v16.4s,v28.8h
         sadalp  v17.4s,v29.8h
         sadalp  v18.4s,v30.8h
         sadalp  v19.4s,v31.8h
 
         smull   v28.8h,v1.8b,v4.8b
+        ldr     d4,[x1],#64                 // B
         smull   v29.8h,v1.8b,v5.8b
+        ldur     d5,[x1,#-48]
         smull   v30.8h,v1.8b,v6.8b
+        ldur     d6,[x1,#-32]
         smull   v31.8h,v1.8b,v7.8b
+        ldur     d7,[x1,#-16]
+        ldr     d1,[x0],#8                  // A1 low
         smlal   v28.8h,v3.8b,v24.8b
-        ldp     d4,d24,[x1],#16             // B
+        ldur     d24,[x1,#-56]               // B
         smlal   v29.8h,v3.8b,v25.8b
-        ldp     d5,d25,[x1],#16
+        ldur     d25,[x1,#-40]
         smlal   v30.8h,v3.8b,v26.8b
-        ldp     d6,d26,[x1],#16
+        ldur     d26,[x1,#-24]
         smlal   v31.8h,v3.8b,v27.8b
-        ldp     d7,d27,[x1],#16
+        ldur     d27,[x1,#-8]
         sadalp  v20.4s,v28.8h
-        ldp     d1,d3,[x0],#16              // A1
+        ldr     d3,[x0],#8                  // A1 high
         sadalp  v21.4s,v29.8h
         sadalp  v22.4s,v30.8h
         sadalp  v23.4s,v31.8h
