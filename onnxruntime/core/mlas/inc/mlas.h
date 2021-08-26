@@ -96,13 +96,40 @@ namespace onnxruntime {
     namespace concurrency {
         class ThreadPool;
     };
+
+    class CPUIDInfo;
 };
 
 using MLAS_THREADPOOL = onnxruntime::concurrency::ThreadPool;
+using MLAS_CPUINFO = onnxruntime::CPUIDInfo;
 
 //
 // Platform routines.
 //
+
+/**
+ * @brief Initializer of Mlas, must be called for each thread pools
+ * that MLAS runs on
+ * @param ThreadPool 
+ * @return 
+*/
+void
+MLASCALL
+MlasInit(
+    MLAS_THREADPOOL* ThreadPool
+    );
+
+/**
+ * @brief Mlas Cleanup, must be called for each thread pools on
+ * which MLAS was ran on.
+ * @param ThreadPool 
+ * @return 
+*/
+void
+MLASCALL
+MlasCleanup(
+    MLAS_THREADPOOL* ThreadPool
+    );
 
 size_t
 MLASCALL
@@ -553,14 +580,6 @@ struct MLAS_GEMM_U8X8_DATA_PARAMS {
 };
 
 
-void
-MLASCALL
-MlasGemm(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS& Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS& DataParams,
-    MLAS_THREADPOOL* ThreadPool
-    );
-
 /**
  * @brief Batched GEMM, for multiplying multiple pairs of matrices.
  * Note:  We only support uniform batching, so shapes and types of the
@@ -580,6 +599,26 @@ MlasGemmBatch(
     const size_t BatchN,
     MLAS_THREADPOOL* ThreadPool
     );
+
+/**
+ * @brief This routine implements the quantized integer matrix/matrix multiply
+    operation (QGEMM).
+
+ * @param Shape       Supplies the structure containing the GEMM input and output shapes.
+ * @param DataParams  Supplies the structure containing the GEMM input and output data layout
+ * @param ThreadPool  Supplies the thread pool object to use, else nullptr if the
+        base library threading support should be used.
+*/
+inline
+void
+MlasGemm(
+    const MLAS_GEMM_U8X8_SHAPE_PARAMS &Shape,
+    const MLAS_GEMM_U8X8_DATA_PARAMS &DataParams,
+    MLAS_THREADPOOL *ThreadPool
+    )
+{
+    MlasGemmBatch(Shape, &DataParams, 1, ThreadPool);
+}
 
 //
 // Buffer packing routines.

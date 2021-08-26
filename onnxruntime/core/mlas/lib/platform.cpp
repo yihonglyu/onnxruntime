@@ -344,6 +344,7 @@ Return Value:
 #if defined(MLAS_TARGET_ARM64)
 
     this->GemmU8X8Dispatch = &MlasGemmU8X8DispatchNeon;
+    this->MaximumThreadCount = MLAS_MAXIMUM_THREAD_COUNT * 4;
 
     //
     // Check if the processor supports ASIMD dot product instructions.

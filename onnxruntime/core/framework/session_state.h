@@ -10,6 +10,7 @@
 
 #include "gsl/gsl"
 
+#include "core/mlas/inc/mlas.h"
 #include "core/common/common.h"
 #include "core/common/logging/logging.h"
 #include "core/common/profiler.h"
@@ -108,6 +109,8 @@ class SessionState {
         enable_mem_reuse_(enable_mem_reuse),
         prepacked_weights_container_(prepacked_weights_container) {
     SetupAllocators();
+    MlasInit(inter_op_thread_pool_);
+    MlasInit(thread_pool_);
   }
 
   ~SessionState() {
@@ -117,6 +120,8 @@ class SessionState {
     for (auto& kvp : deleter_for_initialized_tensors_) {
       kvp.second.f(kvp.second.param);
     }
+    MlasCleanup(inter_op_thread_pool_);
+    MlasCleanup(thread_pool_);
   }
 
   // Graph viewer. CreateGraphInfo must have been called previously.

@@ -24,7 +24,8 @@ struct MLAS_GEMM_U8X8_KERNEL_SSE
     typedef int8_t OffsetBType;
 
     static constexpr size_t PackedK = 2;
-    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{ 12, 128, 128 };
+    static constexpr MLAS_GEMM_U8X8_STRIDES Strides{12, 128, 128};
+    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{12, 128, 128};
 };
 
 constexpr size_t MLAS_GEMM_U8X8_KERNEL_SSE::PackedK;

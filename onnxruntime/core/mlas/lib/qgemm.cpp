@@ -111,37 +111,6 @@ Return Value:
 
 void
 MLASCALL
-MlasGemm(
-    const MLAS_GEMM_U8X8_SHAPE_PARAMS &Shape,
-    const MLAS_GEMM_U8X8_DATA_PARAMS &DataParams,
-    MLAS_THREADPOOL *ThreadPool)
-/*++
-
-Routine Description:
-
-    This routine implements the quantized integer matrix/matrix multiply
-    operation (QGEMM).
-
-Arguments:
-
-    Shape - Supplies the structure containing the GEMM input and output shapes.
-
-    Data  - Supplies the structure containing the GEMM input and output data layout
-
-    ThreadPool - Supplies the thread pool object to use, else nullptr if the
-        base library threading support should be used.
-
-Return Value:
-
-    None.
-
---*/
-{
-    MlasGemmBatch(Shape, &DataParams, 1, ThreadPool);
-}
-
-void
-MLASCALL
 MlasGemmBatch(
     const MLAS_GEMM_U8X8_SHAPE_PARAMS& Shape,
     const MLAS_GEMM_U8X8_DATA_PARAMS* DataParams,
@@ -153,64 +122,76 @@ MlasGemmBatch(
     const size_t K = Shape.K;
 
     //
-    // Compute the number of target threads given the complexity of the SGEMM
+    // Compute the number of target threads given the complexity of the QGEMM
     // operation. Small requests should run using the single threaded path.
     //
 
-    const double Complexity = double(M) * double(N) * double(K) * double(BatchN);
+    const double Complexity = double(M) * double(N) * double(K);
 
-    ptrdiff_t TargetThreadCount;
+    ptrdiff_t ThreadsPerGemm;
 
     if (Complexity < double(MLAS_QGEMM_THREAD_COMPLEXITY * MlasPlatform.MaximumThreadCount)) {
-        TargetThreadCount = ptrdiff_t(Complexity / double(MLAS_QGEMM_THREAD_COMPLEXITY)) + 1;
+        ThreadsPerGemm = ptrdiff_t(Complexity / double(MLAS_QGEMM_THREAD_COMPLEXITY)) + 1;
     } else {
-        TargetThreadCount = MlasPlatform.MaximumThreadCount;
+        ThreadsPerGemm = MlasPlatform.MaximumThreadCount;
     }
 
     ptrdiff_t MaximumThreadCount = MlasGetMaximumThreadCount(ThreadPool);
 
-    if (TargetThreadCount >= MaximumThreadCount) {
-        TargetThreadCount = MaximumThreadCount;
+    if (ThreadsPerGemm >= MaximumThreadCount) {
+        ThreadsPerGemm = MaximumThreadCount;
     }
 
-    ptrdiff_t ThreadsPerGemm = TargetThreadCount / BatchN;
-    if (ThreadsPerGemm < 1) {
+    MLAS_GEMM_U8X8_WORK_BLOCK WorkBlock{1, 1};
+
+    if (ThreadsPerGemm <= 1) {
         ThreadsPerGemm = 1;
-    }
-
-    //
-    // Segment the operation across multiple threads.
-    //
-    // N.B. Currently, the operation is segmented as a 1D partition, which
-    // works okay for operations involving skinny matrices.
-    //
-
-    MLAS_GEMM_U8X8_WORK_BLOCK WorkBlock;
-
-    if (N > M) {
-
-        const size_t BlockedN = (N + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) /
-            MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
-
-        if (size_t(ThreadsPerGemm) > BlockedN) {
-            ThreadsPerGemm = ptrdiff_t(BlockedN);
-        }
-
-        WorkBlock.ThreadCountM = 1;
-        WorkBlock.ThreadCountN = ThreadsPerGemm;
-
     } else {
+        //
+        // Segment the operation across multiple threads.
+        //
 
-        if (size_t(ThreadsPerGemm) > M) {
-            ThreadsPerGemm = ptrdiff_t(M);
+        const bool bigM = M >= N;
+        const size_t bigEdge = bigM ? M : N;
+        const size_t smallEdge = bigM ? N : M;
+
+        if (smallEdge * ThreadsPerGemm <= bigEdge) {
+            // low parallelism, or narrow strip, single dimension partiton
+            const size_t Blocks =
+                (bigEdge + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1)
+                / MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
+
+            if (size_t(ThreadsPerGemm) > Blocks) {
+                ThreadsPerGemm = ptrdiff_t(Blocks);
+            }
+
+            if (bigM) {
+                WorkBlock.ThreadCountM = ThreadsPerGemm;
+            } else {
+                WorkBlock.ThreadCountN = ThreadsPerGemm;
+            }
+        } else {
+            // Try to partition the resulting matrix into squarish shapes.
+            // Estimating square size
+            const double sq_area = double(bigEdge) * double(smallEdge) / ThreadsPerGemm;
+            const double sq_edge = sqrt(sq_area);
+
+            // Current packing logic requires stride N to be divisible by 16
+            // there is no such requirement on M though
+            ptrdiff_t strideN = ptrdiff_t(ceil(sq_edge / 16)) * 16;
+            strideN = std::min((ptrdiff_t)N, strideN);
+            WorkBlock.ThreadCountN = (N + strideN - 1) / strideN;
+
+            ptrdiff_t strideM = M * WorkBlock.ThreadCountN / ThreadsPerGemm;
+            strideM = std::max((ptrdiff_t)8, strideM);
+            strideM = std::min((ptrdiff_t)M, strideM);
+            WorkBlock.ThreadCountM = (M + strideM - 1) / strideM;
         }
-
-        WorkBlock.ThreadCountM = ThreadsPerGemm;
-        WorkBlock.ThreadCountN = 1;
+        ThreadsPerGemm = WorkBlock.ThreadCountM * WorkBlock.ThreadCountN;
     }
-    TargetThreadCount = ThreadsPerGemm * BatchN;
 
-    MlasTrySimpleParallel(ThreadPool, TargetThreadCount, [&](ptrdiff_t tid) {
+    MlasTrySimpleParallel(ThreadPool, ThreadsPerGemm * BatchN,
+                          [&](ptrdiff_t tid) {
         const auto gemm_i = tid / ThreadsPerGemm;
         const auto blk_i = tid % ThreadsPerGemm;
         MlasGemmU8X8Threaded(&WorkBlock, &Shape, &DataParams[gemm_i], blk_i);

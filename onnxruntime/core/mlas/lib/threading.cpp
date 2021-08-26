@@ -33,7 +33,7 @@ MlasExecuteThreaded(
         return;
     }
 
-#if defined(MLAS_NO_ONNXRUNTIME_THREADPOOL)
+#if defined(MLAS_NO_ONNXRUNTIME_DEPENDENCY)
     MLAS_UNREFERENCED_PARAMETER(ThreadPool);
 
     //
@@ -75,7 +75,7 @@ MlasTrySimpleParallel(
         return;
     }
 
-#if defined(MLAS_NO_ONNXRUNTIME_THREADPOOL)
+#if defined(MLAS_NO_ONNXRUNTIME_DEPENDENCY)
     MLAS_UNREFERENCED_PARAMETER(ThreadPool);
 
     //
@@ -100,3 +100,31 @@ MlasTrySimpleParallel(
     MLAS_THREADPOOL::TrySimpleParallelFor(ThreadPool, Iterations, Work);
 #endif
 }
+
+thread_local std::unique_ptr<uint8_t[]> MlasPackBufPtr;
+
+void
+MlasInit(
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    auto TargetThreadCount = MlasGetMaximumThreadCount(ThreadPool);
+    MlasTrySimpleParallel(ThreadPool, TargetThreadCount, [&](ptrdiff_t tid) {
+        MLAS_UNREFERENCED_PARAMETER(tid);
+        MlasEnsurePackBufAllocated();
+    });
+}
+
+void
+MlasCleanup(
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    auto TargetThreadCount = MlasGetMaximumThreadCount(ThreadPool);
+    MlasTrySimpleParallel(ThreadPool, TargetThreadCount,
+                          [&](ptrdiff_t tid) {
+        MLAS_UNREFERENCED_PARAMETER(tid);
+        MlasPackBufPtr.reset(); 
+    });
+}
+

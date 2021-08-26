@@ -184,6 +184,54 @@ MlasGemmU8X8ScaleSumBuffer(
     return MlasGemmU8X8ScaleSumBuffer(SumBuffer, SumBuffer, N, Scale);
 }
 
+constexpr size_t MaxStrideM = 512;
+constexpr size_t MaxStrideN = 512;
+
+template<typename KernelType>
+void
+MlasComputePackBufLayout(
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    MLAS_GEMM_U8X8_STRIDES& Strides,
+    typename KernelType::PackedAType** PackBufA,
+    typename KernelType::PackedBType** PackBufB)
+{
+    constexpr MLAS_GEMM_U8X8_STRIDES ConstStrides = KernelType::PackedStrides;
+
+    CountM =
+        (CountM + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    CountN =
+        (CountN + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    CountK =
+        (CountK + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+
+    Strides.K = std::min(ConstStrides.K, CountK);
+
+    // pack buffer A or B accounts for half of cache size, each
+    size_t MPlusN = MlasGetL2CacheSizePerCore() / Strides.K;
+    if (sizeof(typename KernelType::PackedAType) > 1 ||
+        sizeof(typename KernelType::PackedBType) > 1) {
+        // over-simplistic approach to deal with int16 packing type
+        MPlusN /= 2;
+    }
+    MPlusN = MPlusN & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN * 2 - 1);
+    MPlusN = std::max(MPlusN, size_t(MLAS_QGEMM_STRIDEN_THREAD_ALIGN * 2));
+
+    if (CountM < CountN) {
+        Strides.M = std::min(std::min(CountM, MPlusN / 2), MaxStrideM);
+        Strides.N = std::min(std::min(CountN, MPlusN - Strides.M), MaxStrideN);
+    } else {
+        Strides.N = std::min(std::min(CountN, MPlusN / 2), MaxStrideN);
+        Strides.M = std::min(std::min(CountM, MPlusN - Strides.N), MaxStrideM);
+    }
+    
+    *PackBufA = reinterpret_cast<typename KernelType::PackedAType*>(MlasGetThreadPackBuf());
+    if (nullptr != PackBufB) {
+        size_t bytes = Strides.M * Strides.K * sizeof(typename KernelType::PackedAType);
+        *PackBufB = reinterpret_cast<typename KernelType::PackedBType*>((uint8_t*)(*PackBufA) + bytes);
+    }
+}
 
 template<typename KernelType>
 void
@@ -222,16 +270,17 @@ Return Value:
 
 --*/
 {
-    constexpr MLAS_GEMM_U8X8_STRIDES Strides = KernelType::Strides;
+    MLAS_GEMM_U8X8_STRIDES Strides;
+    typename KernelType::PackedAType* PanelA;
+    typename KernelType::PackedBType* PanelB;
 
-    MLAS_DECLSPEC_ALIGN(typename KernelType::PackedAType PanelA[Strides.M * Strides.K], 64);
-    MLAS_DECLSPEC_ALIGN(typename KernelType::PackedBType PanelB[Strides.N * Strides.K], 64);
-
-    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[Strides.M], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[Strides.N], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[Strides.N], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[MaxStrideM], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[MaxStrideN], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[MaxStrideN], 64);
 
     const size_t K = Shape->K;
+
+    MlasComputePackBufLayout<KernelType>(RangeCountM, RangeCountN, K, Strides, &PanelA, &PanelB);
 
     const size_t lda = Data->lda;
     const size_t ldb = Data->ldb;
@@ -457,15 +506,16 @@ Return Value:
 
 --*/
 {
-    constexpr MLAS_GEMM_U8X8_STRIDES Strides = KernelType::PackedStrides;
+    MLAS_GEMM_U8X8_STRIDES Strides;
 
-    MLAS_DECLSPEC_ALIGN(typename KernelType::PackedAType PanelA[Strides.M * Strides.K], 64);
+    typename KernelType::PackedAType* PanelA;
 
-    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[Strides.M], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[Strides.N], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[Strides.N], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[MaxStrideM], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[MaxStrideN], 64);
+    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[MaxStrideN], 64);
 
     const size_t K = Shape->K;
+    MlasComputePackBufLayout<KernelType>(RangeCountM, RangeCountN, K, Strides, &PanelA, nullptr);
 
     const size_t lda = Data->lda;
     const size_t ldc = Data->ldc;

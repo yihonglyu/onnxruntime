@@ -96,13 +96,14 @@ Abstract:
 //
 // Select the threading model.
 //
-// N.B. MLAS_NO_ONNXRUNTIME_THREADPOOL is used to build MLAS test code outside
+// N.B. MLAS_NO_ONNXRUNTIME_DEPENDENCY is used to build MLAS test code outside
 // of the ONNX Runtime source tree. OpenMP may or may not be enabled in this
 // configuration.
 //
 
-#if !defined(MLAS_NO_ONNXRUNTIME_THREADPOOL)
+#if !defined(MLAS_NO_ONNXRUNTIME_DEPENDENCY)
 #include "core/platform/threadpool.h"
+#include "core/common/cpuid_info.h"
 #endif
 
 #if defined(_OPENMP)
@@ -626,7 +627,7 @@ extern "C" {
 
 #define MLAS_SGEMM_THREAD_COMPLEXITY                (64 * 1024)
 #define MLAS_DGEMM_THREAD_COMPLEXITY                (64 * 1024)
-#define MLAS_QGEMM_THREAD_COMPLEXITY                (64 * 1024)
+#define MLAS_QGEMM_THREAD_COMPLEXITY                (256 * 1024)
 
 //
 // Single-threaded single precision matrix/matrix multiply operation.
@@ -742,7 +743,7 @@ struct MLAS_PLATFORM {
     uint32_t PreferredBufferAlignment;
     int32_t MaximumThreadCount;
 #else
-    static constexpr int32_t MaximumThreadCount = MLAS_MAXIMUM_THREAD_COUNT;
+    int32_t MaximumThreadCount = MLAS_MAXIMUM_THREAD_COUNT;
 #endif
 
 #if defined(MLAS_TARGET_ARM64)
@@ -791,7 +792,7 @@ MlasGetMaximumThreadCount(
     MLAS_THREADPOOL* ThreadPool
     )
 {
-#if defined(MLAS_NO_ONNXRUNTIME_THREADPOOL)
+#if defined(MLAS_NO_ONNXRUNTIME_DEPENDENCY)
     MLAS_UNREFERENCED_PARAMETER(ThreadPool);
 
 #if defined(_OPENMP)
@@ -803,6 +804,39 @@ MlasGetMaximumThreadCount(
     return onnxruntime::concurrency::ThreadPool::DegreeOfParallelism(ThreadPool);
 #endif
 }
+
+constexpr size_t MLAS_MIN_CACHE_SIZE = 64UL * 1024;
+
+inline
+size_t
+MlasGetL2CacheSizePerCore()
+{
+#if defined(MLAS_NO_ONNXRUNTIME_DEPENDENCY)
+    return MLAS_MIN_CACHE_SIZE;
+#else
+    return std::max(MLAS_MIN_CACHE_SIZE, MLAS_CPUINFO::GetCPUIDInfo().GetL2DcacheSize());
+#endif
+}
+
+extern thread_local std::unique_ptr<uint8_t[]> MlasPackBufPtr;
+
+MLAS_FORCEINLINE
+void
+MlasEnsurePackBufAllocated()
+{
+    if (!MlasPackBufPtr) {
+        MlasPackBufPtr = std::make_unique<uint8_t[]>(MlasGetL2CacheSizePerCore());
+    }
+}
+
+MLAS_FORCEINLINE
+uint8_t*
+MlasGetThreadPackBuf()
+{
+    MlasEnsurePackBufAllocated();
+    return MlasPackBufPtr.get();
+}
+
 
 inline
 void
@@ -1850,3 +1884,4 @@ MlasReadTimeStampCounter(void)
 #endif
 #endif
 }
+

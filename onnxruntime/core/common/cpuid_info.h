@@ -23,6 +23,11 @@ class CPUIDInfo {
   bool HasSSE4_1() const { return has_sse4_1_; }
   bool IsHybrid() const { return is_hybrid_; }
 
+  /**
+   * @return lowest L2 data cache available for each core.
+  */
+  size_t GetL2DcacheSize() const { return l2dcache_size_; }
+
   // ARM 
   bool HasArmNeonDot() const { return has_arm_neon_dot_; }
 
@@ -38,6 +43,8 @@ class CPUIDInfo {
   bool is_hybrid_{false};
 
   bool has_arm_neon_dot_{false};
+
+  size_t l2dcache_size_{0};
 
   static CPUIDInfo instance_;
 };

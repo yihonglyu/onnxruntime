@@ -13,6 +13,9 @@
 #include <memory>
 #if defined(_MSC_VER)
 #include <intrin.h>
+#include <bitset>
+#include <Windows.h>
+#include "core/platform/path_lib.h"
 #elif defined(__GNUC__)
 #include <cpuid.h>
 #endif
@@ -52,16 +55,150 @@ static inline int XGETBV() {
 }
 #endif  // CPUIDINFO_ARCH_X86
 
+constexpr size_t DEFAULT_L2_CACHE_SIZE = 64UL * 1024;
+
+#ifdef _MSC_VER
+
+static inline size_t count_set_bits(uint64_t mask) {
+  std::bitset<64> bits(mask);
+  return bits.count();
+}
+
+struct PhysicalCore {
+  uint64_t proc_mask_ = 0;
+  size_t l2_dcache_size_ = 0;
+};
+
+/**
+ * @brief Called during startup to find out l2 data cache size from
+ * Windows.
+ * 
+ * TODO!! we are ignoring processor groups for now.
+*/
+size_t init_l2_cache_info_win(){
+  using CPUInfo = SYSTEM_LOGICAL_PROCESSOR_INFORMATION;
+
+  std::vector<PhysicalCore> procs;
+  size_t min_l2_cache_size = std::numeric_limits<size_t>::max();
+  DWORD err = ERROR_SUCCESS;
+  DWORD len = 0;
+
+  // Determine required buffer length.
+  if (GetLogicalProcessorInformation(nullptr, &len)) {
+    ORT_THROW("Failed to obtain logical processor information buffer size!");
+  }
+  err = GetLastError();
+  if (err != ERROR_INSUFFICIENT_BUFFER) {
+    ORT_THROW("Failed to obtain logical processor info buffer size, error: ", FormatErrorCode(err));
+  }
+
+  // Allocate buffer of required size
+  auto bufHolder = std::make_unique<uint8_t[]>(len);
+  CPUInfo* infoBuf = reinterpret_cast<CPUInfo*>(bufHolder.get());
+
+  if (GetLogicalProcessorInformation(infoBuf, &len) == FALSE) {
+    ORT_THROW("Failed to query processor info: ", FormatErrorCode(GetLastError()));
+  }
+  size_t numInfo = len / sizeof(CPUInfo);
+
+  for (size_t i = 0; i < numInfo; ++i) {
+    CPUInfo& info = infoBuf[i];
+    switch (info.Relationship) {
+      case RelationProcessorCore:
+      {
+        procs.emplace_back();
+        auto& pproc = procs[procs.size() - 1];
+        pproc.proc_mask_ = info.ProcessorMask;
+        break;
+      }
+
+      case RelationCache:
+        if (info.Cache.Type != CacheData && info.Cache.Type != CacheUnified) {
+          break;
+        }
+        if (info.Cache.Level != 2) {
+          break;
+        }
+        for (auto& proc: procs) {
+          if ((proc.proc_mask_ & info.ProcessorMask) == proc.proc_mask_) {
+            size_t share_factor = count_set_bits(info.ProcessorMask) / count_set_bits(proc.proc_mask_);
+            size_t per_proc_size = info.Cache.Size / share_factor;
+            proc.l2_dcache_size_ += per_proc_size;
+            min_l2_cache_size = std::max(min_l2_cache_size, proc.l2_dcache_size_);
+          }
+        }
+        break;
+
+      default:
+        break;
+    }
+  }
+  if (min_l2_cache_size == std::numeric_limits<size_t>::max()) {
+    // fail to get l2 cache size, assume a default value
+    min_l2_cache_size = DEFAULT_L2_CACHE_SIZE;
+  }
+  return min_l2_cache_size;
+}
+
+#endif  // _MSC_VER
+
+#ifdef CPUINFO_SUPPORTED
+/**
+ * @brief Called during startup to find out l2 data cache size
+*/
+size_t init_l2_cache_info() {
+  size_t min_l2_cache_size = std::numeric_limits<size_t>::max();
+
+  const size_t processors_count = cpuinfo_get_processors_count();
+  for (uint32_t i = 0; i < processors_count; i++) {
+    const cpuinfo_processor* processor = cpuinfo_get_processor(i);
+    const cpuinfo_cache* cache = nullptr == processor->cache.l2 ?
+        processor->cache.l1d : processor->cache.l2;
+    if (!cache) {
+      continue;
+    }
+
+    // how many cores are sharing this cache?
+    const cpuinfo_core* prev_core = cpuinfo_get_processor(cache->processor_start)->core;
+    size_t cache_sharing_cores = 1;
+    for (uint32_t ci = 1; ci < cache->processor_count; ci++) {
+      const cpuinfo_core* cur_core = cpuinfo_get_processor(
+          cache->processor_start + ci)->core;
+      if (cur_core != prev_core) {
+        prev_core = cur_core;
+        cache_sharing_cores++;
+      }
+    }
+
+    size_t l2_cache_size = cache->size / cache_sharing_cores;
+    min_l2_cache_size = std::min(min_l2_cache_size, l2_cache_size);
+  }
+
+  if (min_l2_cache_size == std::numeric_limits<size_t>::max()) {
+    // fail to get l2 cache size, assume a default value
+    min_l2_cache_size = DEFAULT_L2_CACHE_SIZE;
+  }
+  return min_l2_cache_size;
+}
+#endif // CPUINFO_SUPPORTED
+
+
 CPUIDInfo CPUIDInfo::instance_;
 
-
 CPUIDInfo::CPUIDInfo() {
-#if (defined(CPUIDINFO_ARCH_X86) || defined(CPUIDINFO_ARCH_ARM)) && defined(CPUINFO_SUPPORTED)
+
+#ifdef _MSC_VER
+  this->l2dcache_size_ = init_l2_cache_info_win();
+#elif (defined(CPUIDINFO_ARCH_X86) || defined(CPUIDINFO_ARCH_ARM)) && defined(CPUINFO_SUPPORTED)
     if (!cpuinfo_initialize()) {
       // Unfortunately we can not capture cpuinfo log!!
       ORT_THROW("Failed to initialize CPU info.");
     }
+    this->l2dcache_size_ = init_l2_cache_info();
+#elif
+  this->l2dcache_size_ = DEFAULT_L2_CACHE_SIZE;
 #endif
+
 
 #if defined(CPUIDINFO_ARCH_X86)
     int data[4] = {-1};
