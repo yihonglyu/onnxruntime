@@ -197,27 +197,50 @@ MlasComputePackBufLayout(
     typename KernelType::PackedAType** PackBufA,
     typename KernelType::PackedBType** PackBufB)
 {
+    //
+    // The plan is to allocate about half of the cache to B buffer,
+    // and about a quarter to A buffer. This is because in our operation
+    // methods, we iterate N in the outer loop and M in the inner loop.
+    // While we pack A in the inner loop, it reads from original matrix
+    // and writes to the packing buffer, taking twice the space.
+    // If A buffer is too big, it would evict B buffer out of the cache.
+    //
+
     constexpr MLAS_GEMM_U8X8_STRIDES ConstStrides = KernelType::PackedStrides;
 
-    CountM =
-        (CountM + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
-    CountN =
-        (CountN + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
-    CountK =
-        (CountK + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    size_t AlignedK = (CountK + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) &
+                ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    Strides.K = std::min(ConstStrides.K, AlignedK);
 
-    Strides.K = std::min(ConstStrides.K, CountK);
+    // leave room for row col sum buffer when computing stride M or stride N
+    constexpr size_t RowColSumSpacerFactor = 8;
+    size_t MNEdge = MlasGetL2CacheSizePerCore() / (Strides.K + RowColSumSpacerFactor);
 
-    // pack buffer A or B accounts for half of cache size, each
-    size_t MPlusN = MlasGetL2CacheSizePerCore() / Strides.K;
     if (sizeof(typename KernelType::PackedAType) > 1 ||
         sizeof(typename KernelType::PackedBType) > 1) {
-        // over-simplistic approach to deal with int16 packing type
-        MPlusN /= 2;
+        // over-simplistic approach to deal with int16 packing type, needs improvment
+        MNEdge /= 2;
     }
-    MPlusN = MPlusN & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN * 2 - 1);
-    MPlusN = std::max(MPlusN, size_t(MLAS_QGEMM_STRIDEN_THREAD_ALIGN * 2));
 
+    size_t strideN = (MNEdge / 2) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    if (strideN >= CountN) {
+        strideN = (CountN + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) &
+                ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    }
+
+    size_t strideM = (MNEdge - strideN) / 2;
+    if (strideM >= CountM) {
+        strideM = CountM;
+    } else if (strideM <= 8) {
+        strideM = 8;
+    } else {
+    }
+    strideM = std::max(8, strideM);
+   
+    strideN = (MNEdge - strideM * 2) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+        
+
+        
     if (CountM < CountN) {
         Strides.M = std::min(std::min(CountM, MPlusN / 2), MaxStrideM);
         Strides.N = std::min(std::min(CountN, MPlusN - Strides.M), MaxStrideN);
