@@ -124,7 +124,7 @@ size_t init_l2_cache_info_win(){
             size_t share_factor = count_set_bits(info.ProcessorMask) / count_set_bits(proc.proc_mask_);
             size_t per_proc_size = info.Cache.Size / share_factor;
             proc.l2_dcache_size_ += per_proc_size;
-            min_l2_cache_size = std::max(min_l2_cache_size, proc.l2_dcache_size_);
+            min_l2_cache_size = std::min(min_l2_cache_size, proc.l2_dcache_size_);
           }
         }
         break;

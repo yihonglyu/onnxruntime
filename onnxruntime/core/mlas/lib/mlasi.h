@@ -818,6 +818,16 @@ MlasGetL2CacheSizePerCore()
 #endif
 }
 
+inline
+size_t
+MlasPackBufSize()
+{
+    // the buffer has multiple segments:
+    // row sum, packed A, col sum, zero point b, packed B
+    // each part need align to 64B boundary, so we add some padding space
+    return MlasGetL2CacheSizePerCore() + 64 * 8;
+}
+
 extern thread_local std::unique_ptr<uint8_t[]> MlasPackBufPtr;
 
 MLAS_FORCEINLINE
@@ -825,7 +835,7 @@ void
 MlasEnsurePackBufAllocated()
 {
     if (!MlasPackBufPtr) {
-        MlasPackBufPtr = std::make_unique<uint8_t[]>(MlasGetL2CacheSizePerCore());
+        MlasPackBufPtr = std::make_unique<uint8_t[]>(MlasPackBufSize());
     }
 }
 
@@ -834,7 +844,10 @@ uint8_t*
 MlasGetThreadPackBuf()
 {
     MlasEnsurePackBufAllocated();
-    return MlasPackBufPtr.get();
+    ptrdiff_t addr = reinterpret_cast<ptrdiff_t>(MlasPackBufPtr.get());
+    // Align to cache line boundary
+    addr = (addr + 63) & ~63;
+    return reinterpret_cast<uint8_t*>(addr);
 }
 
 

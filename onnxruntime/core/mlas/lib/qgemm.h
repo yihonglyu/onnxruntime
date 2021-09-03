@@ -30,6 +30,7 @@ Abstract:
 
 #pragma once
 
+#include <stdexcept>
 #include "mlasi.h"
 
 //
@@ -184,8 +185,34 @@ MlasGemmU8X8ScaleSumBuffer(
     return MlasGemmU8X8ScaleSumBuffer(SumBuffer, SumBuffer, N, Scale);
 }
 
-constexpr size_t MaxStrideM = 512;
-constexpr size_t MaxStrideN = 512;
+class Formatter
+{
+   public:
+    Formatter() {}
+    ~Formatter() {}
+
+    template <typename Type>
+    Formatter& operator<<(const Type& value)
+    {
+        stream_ << value;
+        return *this;
+    }
+
+    std::string str() const { return stream_.str(); }
+    operator std::string() const { return stream_.str(); }
+
+    enum ConvertToString { to_str };
+    std::string operator>>(ConvertToString) { return stream_.str(); }
+
+   private:
+    std::stringstream stream_;
+
+    Formatter(const Formatter&);
+    Formatter& operator=(Formatter&);
+};
+
+// TODO!! Block M should be aligned according to QGEMM kernel dimension
+constexpr ptrdiff_t MLAS_QGEMM_M_ALIGN = 4;
 
 template<typename KernelType>
 void
@@ -194,8 +221,12 @@ MlasComputePackBufLayout(
     size_t CountN,
     size_t CountK,
     MLAS_GEMM_U8X8_STRIDES& Strides,
-    typename KernelType::PackedAType** PackBufA,
-    typename KernelType::PackedBType** PackBufB)
+    typename KernelType::PackedAType*& PackBufA,
+    typename KernelType::PackedBType** PackBufB,
+    int32_t*& RowSumBuf,
+    int32_t*& ColumnSumBuf,
+    int32_t*& ZeroPointBBuf
+    )
 {
     //
     // The plan is to allocate about half of the cache to B buffer,
@@ -207,52 +238,85 @@ MlasComputePackBufLayout(
     //
 
     constexpr MLAS_GEMM_U8X8_STRIDES ConstStrides = KernelType::PackedStrides;
+    const size_t CacheSize = MlasGetL2CacheSizePerCore();
 
-    size_t AlignedK = (CountK + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) &
+    const size_t AlignedK = (CountK + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) &
                 ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
     Strides.K = std::min(ConstStrides.K, AlignedK);
 
     // leave room for row col sum buffer when computing stride M or stride N
     constexpr size_t RowColSumSpacerFactor = 8;
-    size_t MNEdge = MlasGetL2CacheSizePerCore() / (Strides.K + RowColSumSpacerFactor);
+    size_t MplusN = CacheSize / (Strides.K + RowColSumSpacerFactor);
 
     if (sizeof(typename KernelType::PackedAType) > 1 ||
         sizeof(typename KernelType::PackedBType) > 1) {
         // over-simplistic approach to deal with int16 packing type, needs improvment
-        MNEdge /= 2;
+        MplusN /= 2;
     }
 
-    size_t strideN = (MNEdge / 2) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
-    if (strideN >= CountN) {
-        strideN = (CountN + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) &
-                ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
-    }
+    size_t StrideN = std::min(MplusN / 2, CountN);
+    size_t StrideM = (MplusN - StrideN) / 2;
 
-    size_t strideM = (MNEdge - strideN) / 2;
-    if (strideM >= CountM) {
-        strideM = CountM;
-    } else if (strideM <= 8) {
-        strideM = 8;
+    if (StrideM < CountM) {
+        // try to  distribute stride M evenly
+        const size_t msteps = (CountM + StrideM - 1) / StrideM;
+        StrideM = (CountM + msteps - 1) / msteps;
+
+        StrideM = (StrideM + MLAS_QGEMM_M_ALIGN - 1) & ~(MLAS_QGEMM_M_ALIGN - 1);
+        if (StrideM > MLAS_QGEMM_M_ALIGN && StrideM > ((MplusN - StrideN) / 2)) {
+            StrideM -= MLAS_QGEMM_M_ALIGN;
+        }
     } else {
+        StrideM = CountM;
     }
-    strideM = std::max(8, strideM);
-   
-    strideN = (MNEdge - strideM * 2) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
-        
 
-        
-    if (CountM < CountN) {
-        Strides.M = std::min(std::min(CountM, MPlusN / 2), MaxStrideM);
-        Strides.N = std::min(std::min(CountN, MPlusN - Strides.M), MaxStrideN);
+    // re-adjust N based on M
+    StrideN = (MplusN - StrideM * 2);
+    if (StrideN < CountN) {
+        const size_t nsteps = (CountN + StrideN - 1) / StrideN;
+        StrideN = (CountN + nsteps - 1) / nsteps;
     } else {
-        Strides.N = std::min(std::min(CountN, MPlusN / 2), MaxStrideN);
-        Strides.M = std::min(std::min(CountM, MPlusN - Strides.N), MaxStrideM);
+        StrideN = CountN;
+    }
+    StrideN =
+        (StrideN + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+    if (StrideN > MLAS_QGEMM_STRIDEN_THREAD_ALIGN && StrideN > (MplusN - StrideM * 2)) {
+        StrideN -= MLAS_QGEMM_STRIDEN_THREAD_ALIGN;
     }
     
-    *PackBufA = reinterpret_cast<typename KernelType::PackedAType*>(MlasGetThreadPackBuf());
+    Strides.M = StrideM;
+    Strides.N = StrideN;
+    
+    const size_t AlignedM =
+        (StrideM + MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1) & ~(MLAS_QGEMM_STRIDEN_THREAD_ALIGN - 1);
+
+    ptrdiff_t addr = (ptrdiff_t)MlasGetThreadPackBuf();
+    size_t bytes = 0;
+
+    RowSumBuf = (int32_t*)(addr + bytes);
+    bytes += AlignedM * sizeof(int32_t);
+
+    PackBufA = reinterpret_cast<typename KernelType::PackedAType*>(addr + bytes);
+    size_t Abytes = StrideM * Strides.K * sizeof(typename KernelType::PackedAType);
+    Abytes = (Abytes + 63) & ~63;
+    bytes += Abytes;
+
+    ColumnSumBuf = (int32_t*)(addr + bytes);
+    bytes += StrideN * sizeof(int32_t);
+
+    ZeroPointBBuf = (int32_t*)(addr + bytes);
+    bytes += StrideN * sizeof(int32_t);
+    
     if (nullptr != PackBufB) {
-        size_t bytes = Strides.M * Strides.K * sizeof(typename KernelType::PackedAType);
-        *PackBufB = reinterpret_cast<typename KernelType::PackedBType*>((uint8_t*)(*PackBufA) + bytes);
+        *PackBufB = reinterpret_cast<typename KernelType::PackedBType*>(addr + bytes);
+    }
+    bytes += StrideN * Strides.K * sizeof(typename KernelType::PackedBType);
+    if (bytes > (CacheSize + 64 * 5)) {
+        throw std::runtime_error(
+            Formatter() << "Internal Error: MLAS packing buffer overflow! M: " << CountM
+                        << ", N: " << CountN << ", K: " << CountK << ", Cache Size: " << CacheSize
+                        << ", StrideM: " << StrideM << ", StrideN: " << StrideN
+                        << ", StrideK: " << Strides.K << ", Used bytes: " << bytes);
     }
 }
 
@@ -297,13 +361,14 @@ Return Value:
     typename KernelType::PackedAType* PanelA;
     typename KernelType::PackedBType* PanelB;
 
-    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[MaxStrideM], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[MaxStrideN], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[MaxStrideN], 64);
+    int32_t* RowSumBuffer;
+    int32_t* ColumnSumBuffer;
+    int32_t* ZeroPointBBuffer;
 
     const size_t K = Shape->K;
 
-    MlasComputePackBufLayout<KernelType>(RangeCountM, RangeCountN, K, Strides, &PanelA, &PanelB);
+    MlasComputePackBufLayout<KernelType>(RangeCountM, RangeCountN, K, Strides, PanelA, &PanelB,
+                                         RowSumBuffer, ColumnSumBuffer, ZeroPointBBuffer);
 
     const size_t lda = Data->lda;
     const size_t ldb = Data->ldb;
@@ -530,15 +595,15 @@ Return Value:
 --*/
 {
     MLAS_GEMM_U8X8_STRIDES Strides;
-
     typename KernelType::PackedAType* PanelA;
 
-    MLAS_DECLSPEC_ALIGN(int32_t RowSumBuffer[MaxStrideM], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ColumnSumBuffer[MaxStrideN], 64);
-    MLAS_DECLSPEC_ALIGN(int32_t ZeroPointBBuffer[MaxStrideN], 64);
+    int32_t* RowSumBuffer;
+    int32_t* ColumnSumBuffer;
+    int32_t* ZeroPointBBuffer;
 
     const size_t K = Shape->K;
-    MlasComputePackBufLayout<KernelType>(RangeCountM, RangeCountN, K, Strides, &PanelA, nullptr);
+    MlasComputePackBufLayout<KernelType>(RangeCountM, RangeCountN, K, Strides, PanelA, nullptr,
+                                         RowSumBuffer, ColumnSumBuffer, ZeroPointBBuffer);
 
     const size_t lda = Data->lda;
     const size_t ldc = Data->ldc;
