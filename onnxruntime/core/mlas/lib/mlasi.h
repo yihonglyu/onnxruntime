@@ -617,7 +617,7 @@ extern "C" {
 // value.
 //
 
-#define MLAS_DEFAULT_PREFERRED_BUFFER_ALIGNMENT     32
+#define MLAS_DEFAULT_PREFERRED_BUFFER_ALIGNMENT     64
 
 //
 // Define the target number of per-thread multiplies before using another
@@ -626,7 +626,7 @@ extern "C" {
 
 #define MLAS_SGEMM_THREAD_COMPLEXITY                (64 * 1024)
 #define MLAS_DGEMM_THREAD_COMPLEXITY                (64 * 1024)
-#define MLAS_QGEMM_THREAD_COMPLEXITY                (64 * 1024)
+#define MLAS_QGEMM_THREAD_COMPLEXITY                (128 * 1024)
 
 //
 // Single-threaded single precision matrix/matrix multiply operation.
@@ -1849,4 +1849,77 @@ MlasReadTimeStampCounter(void)
     return 0;
 #endif
 #endif
+}
+
+MLAS_FORCEINLINE
+size_t
+MlasDivRndup(size_t up, size_t down)
+{
+    return (up + down - 1) / down;
+}
+
+
+/**
+ * @brief For a packed quantized buffer, locate row/col sum buffer and the
+ *        start of the value buffer
+ * 
+ * Pre-packing is to re-arrange a quantized matrix to prepare for QGEMM
+ * multiplication kernel. We reserve top portion of the buffer for row/col
+ * sums, and align to 64B (cacheline) boundary
+ * 
+ * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
+ * @param [IN]  NumSums     Number of row/col sums needed
+ * @param [OUT] SumBuf      Points to the row/col sums buffer
+ * @param [OUT] ValBuf      Points to the quantized value buffer
+ */
+template<typename PackedValType>
+MLAS_FORCEINLINE
+void
+MlasGetSumValBufFromPacked(
+    const void* PackedBuf,
+    const size_t NumSums,
+    const int32_t*& SumBuf,
+    const PackedValType*& ValBuf)
+{
+    const uint8_t* start = reinterpret_cast<const uint8_t*>(PackedBuf);
+
+    // one sum per  col/row
+    SumBuf = reinterpret_cast<const int32_t*>(start);
+    size_t headerSize = NumSums * sizeof(int32_t);
+    headerSize = (headerSize + 63) & ~(63);
+
+    ValBuf = reinterpret_cast<const PackedValType*>(start + headerSize);
+}
+
+/**
+ * @brief Mutable version of MlasGetSumValBufFromPacked. For a packed
+ *        quantized buffer, locate row/col sum buffer and the start of
+ *        the value buffer
+ *
+ * Pre-packing is to re-arrange a quantized matrix to prepare for QGEMM
+ * multiplication kernel. We reserve top portion of the buffer for row/col
+ * sums, and align to 64B (cacheline) boundary
+ *
+ * @param [IN]  PackedBuf   Pre-packed quantized matrix buffer
+ * @param [IN]  NumSums     Number of row/col sums needed
+ * @param [OUT] SumBuf      Points to the row/col sums buffer
+ * @param [OUT] ValBuf      Points to the quantized value buffer
+ */
+template<typename PackedValType>
+MLAS_FORCEINLINE
+void
+MlasGetSumValBufFromPackedMutable(
+    void* PackedBuf,
+    const size_t NumSums,
+    int32_t*& SumBuf,
+    PackedValType*& ValBuf)
+{
+    uint8_t* start = reinterpret_cast<uint8_t*>(PackedBuf);
+
+    // one sum per  col/row
+    SumBuf = reinterpret_cast<int32_t*>(start);
+    size_t headerSize = NumSums * sizeof(int32_t);
+    headerSize = (headerSize + 63) & ~(63);
+
+    ValBuf = reinterpret_cast<PackedValType*>(start + headerSize);
 }

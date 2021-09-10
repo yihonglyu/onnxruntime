@@ -198,7 +198,8 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8X8_KERNEL_DEFAULT>(
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchDefault = {
     MlasGemmU8X8Operation<MLAS_GEMM_U8X8_KERNEL_DEFAULT>,
     nullptr,
-    nullptr,
     MLAS_GEMM_U8X8_KERNEL_DEFAULT::PackedK,
     0,
+    MlasGemmPackASizeT<MLAS_GEMM_U8X8_KERNEL_DEFAULT>,
+    MlasGemmPackBSizeT<MLAS_GEMM_U8X8_KERNEL_DEFAULT>
 };

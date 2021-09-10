@@ -187,13 +187,17 @@ ProcessNextColumnLoopM4:
         vmovdqu YMMWORD PTR [rcx+r11*2],ymm6
         vmovdqu YMMWORD PTR [rcx+rax],ymm7
         vpmaddubsw ymm4,ymm4,ymm9           ; horizontal byte+byte=word per row
-        vpaddw  ymm0,ymm0,ymm4              ; add words to row accumulators
+        vpmaddwd ymm4,ymm4,ymm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; add dwords to row accumulators
         vpmaddubsw ymm5,ymm5,ymm9
-        vpaddw  ymm1,ymm1,ymm5
+        vpmaddwd ymm5,ymm5,ymm8
+        vpaddd  ymm1,ymm1,ymm5
         vpmaddubsw ymm6,ymm6,ymm9
-        vpaddw  ymm2,ymm2,ymm6
+        vpmaddwd ymm6,ymm6,ymm8
+        vpaddd  ymm2,ymm2,ymm6
         vpmaddubsw ymm7,ymm7,ymm9
-        vpaddw  ymm3,ymm3,ymm7
+        vpmaddwd ymm7,ymm7,ymm8
+        vpaddd  ymm3,ymm3,ymm7
         add     rdx,32                      ; advance matrix A by 32 bytes
         add     rcx,32                      ; advance matrix D by 32 bytes
         sub     rbx,32                      ; subtract columns remaining
@@ -213,13 +217,17 @@ ProcessRemainingColumnsM4:
         vmovdqu XMMWORD PTR [rcx+r11*2],xmm6
         vmovdqu XMMWORD PTR [rcx+rax],xmm7
         vpmaddubsw xmm4,xmm4,xmm9           ; horizontal byte+byte=word per row
-        vpaddw  ymm0,ymm0,ymm4              ; add words to row accumulators
+        vpmaddwd xmm4,xmm4,xmm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; add dwords to row accumulators
         vpmaddubsw xmm5,xmm5,xmm9
-        vpaddw  ymm1,ymm1,ymm5
+        vpmaddwd xmm5,xmm5,xmm8             ; horizontal word+word=dword per row
+        vpaddd  ymm1,ymm1,ymm5
         vpmaddubsw xmm6,xmm6,xmm9
-        vpaddw  ymm2,ymm2,ymm6
+        vpmaddwd xmm6,xmm6,xmm8             ; horizontal word+word=dword per row
+        vpaddd  ymm2,ymm2,ymm6
         vpmaddubsw xmm7,xmm7,xmm9
-        vpaddw  ymm3,ymm3,ymm7
+        vpmaddwd xmm7,xmm7,xmm8             ; horizontal word+word=dword per row
+        vpaddd  ymm3,ymm3,ymm7
         add     rdx,16                      ; advance matrix A by 16 bytes
         add     rcx,16                      ; advance matrix D by 16 bytes
         test    bl,15                       ; test for unaligned columns
@@ -300,24 +308,24 @@ ProcessPaddedMatrixADataM4:
         vpmaskmovd XMMWORD PTR [rax],xmm10,xmm6
         vpmaskmovd XMMWORD PTR [rax+r11],xmm10,xmm7
         vpmaddubsw xmm4,xmm4,xmm9           ; horizontal byte+byte=word per row
-        vpaddw  ymm0,ymm0,ymm4              ; add words to row accumulators
+        vpmaddwd xmm4,xmm4,xmm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; add dwords to row accumulators
         vpmaddubsw xmm5,xmm5,xmm9
-        vpaddw  ymm1,ymm1,ymm5
+        vpmaddwd xmm5,xmm5,xmm8
+        vpaddd  ymm1,ymm1,ymm5
         vpmaddubsw xmm6,xmm6,xmm9
-        vpaddw  ymm2,ymm2,ymm6
+        vpmaddwd xmm6,xmm6,xmm8
+        vpaddd  ymm2,ymm2,ymm6
         vpmaddubsw xmm7,xmm7,xmm9
-        vpaddw  ymm3,ymm3,ymm7
+        vpmaddwd xmm7,xmm7,xmm8
+        vpaddd  ymm3,ymm3,ymm7
 
 ;
 ; Reduce the sums for the four rows of output.
 ;
 
 ReduceRowSumBufferM4:
-        vpmaddwd ymm0,ymm0,ymm8             ; horizontal word+word=dword per row
-        vpmaddwd ymm1,ymm1,ymm8
         vphaddd ymm0,ymm0,ymm1              ; reduce and interleave Sum1/Sum0
-        vpmaddwd ymm2,ymm2,ymm8
-        vpmaddwd ymm3,ymm3,ymm8
         vphaddd ymm1,ymm2,ymm3              ; reduce and interleave Sum3/Sum2
         vphaddd ymm0,ymm0,ymm1              ; reduce and interleave Sum3/Sum2/Sum1/Sum0
         vextracti128 xmm1,ymm0,1            ; extract high dwords
@@ -349,7 +357,8 @@ ProcessNextColumnLoopM1:
         vmovdqu ymm4,YMMWORD PTR [rdx]
         vmovdqu YMMWORD PTR [rcx],ymm4
         vpmaddubsw ymm4,ymm4,ymm9           ; horizontal byte+byte=word per row
-        vpaddw  ymm0,ymm0,ymm4              ; add words to row accumulators
+        vpmaddwd ymm4,ymm4,ymm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; add dwords to row accumulators
         add     rdx,32                      ; advance matrix A by 32 bytes
         add     rcx,32                      ; advance matrix D by 32 bytes
         sub     rbx,32                      ; subtract columns remaining
@@ -363,7 +372,8 @@ ProcessRemainingColumnsM1:
         vmovdqu xmm4,XMMWORD PTR [rdx]
         vmovdqu XMMWORD PTR [rcx],xmm4
         vpmaddubsw xmm4,xmm4,xmm9           ; horizontal byte+byte=word per row
-        vpaddw  ymm0,ymm0,ymm4              ; add words to row accumulators
+        vpmaddwd xmm4,xmm4,xmm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; add words to row accumulators
         add     rdx,16                      ; advance matrix A by 16 bytes
         add     rcx,16                      ; advance matrix D by 16 bytes
         test    bl,15                       ; test for unaligned columns
@@ -413,14 +423,14 @@ ProcessPaddedMatrixADataM1:
         vmovdqu xmm4,XMMWORD PTR GemmU8S8CopyPackAFrame.PaddedMatrixAData[rsp]
         vpmaskmovd XMMWORD PTR [rcx],xmm10,xmm4
         vpmaddubsw ymm4,ymm4,ymm9           ; horizontal byte+byte=word per row
-        vpaddw  ymm0,ymm0,ymm4              ; add words to row accumulators
+        vpmaddwd xmm4,xmm4,xmm8             ; horizontal word+word=dword per row
+        vpaddd  ymm0,ymm0,ymm4              ; add words to row accumulators
 
 ;
 ; Reduce the sum for the single row of output.
 ;
 
 ReduceRowSumBufferM1:
-        vpmaddwd ymm0,ymm0,ymm8             ; horizontal word+word=dword per row
         vextracti128 xmm1,ymm0,1            ; extract high dwords
         vpaddd  xmm0,xmm0,xmm1              ; reduction
         vphaddd xmm0,xmm0,xmm0

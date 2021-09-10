@@ -491,10 +491,11 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8X8_KERNEL_NEON>(
 
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchNeon = {
     MlasGemmU8X8Operation<MLAS_GEMM_U8X8_KERNEL_NEON>,
-    MlasGemmU8X8PackedOperation<MLAS_GEMM_U8X8_KERNEL_NEON>,
     MlasGemmU8X8CopyPackB<MLAS_GEMM_U8X8_KERNEL_NEON>,
     MLAS_GEMM_U8X8_KERNEL_NEON::PackedK,
     MLAS_GEMM_U8X8_KERNEL_NEON::PackedStrides.K,
+    MlasGemmPackASizeT<MLAS_GEMM_U8X8_KERNEL_NEON>,
+    MlasGemmPackBSizeT<MLAS_GEMM_U8X8_KERNEL_NEON>
 };
 
 #if defined(MLAS_TARGET_ARM64)
@@ -529,7 +530,7 @@ struct MLAS_GEMM_S8S8_KERNEL_NEON {
 
     static constexpr size_t PackedK = 16;
     static constexpr MLAS_GEMM_U8X8_STRIDES Strides{24, 128, 256};
-    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{24, 128, 384};
+    static constexpr MLAS_GEMM_U8X8_STRIDES PackedStrides{16, 1024, 2048};
 };
 
 constexpr size_t MLAS_GEMM_S8S8_KERNEL_NEON::PackedK;
@@ -965,10 +966,11 @@ MlasGemmU8X8Kernel<MLAS_GEMM_S8S8_KERNEL_NEON>(
 
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmS8S8DispatchNeon = {
     MlasGemmU8X8Operation<MLAS_GEMM_S8S8_KERNEL_NEON>,
-    MlasGemmU8X8PackedOperation<MLAS_GEMM_S8S8_KERNEL_NEON>,
     MlasGemmU8X8CopyPackB<MLAS_GEMM_S8S8_KERNEL_NEON>,
     MLAS_GEMM_S8S8_KERNEL_NEON::PackedK,
     MLAS_GEMM_S8S8_KERNEL_NEON::PackedStrides.K,
+    MlasGemmPackASizeT<MLAS_GEMM_S8S8_KERNEL_NEON>,
+    MlasGemmPackBSizeT<MLAS_GEMM_S8S8_KERNEL_NEON>
 };
 
 #endif  //defined(MLAS_TARGET_ARM64)

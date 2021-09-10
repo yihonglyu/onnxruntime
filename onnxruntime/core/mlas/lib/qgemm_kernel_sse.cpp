@@ -486,7 +486,6 @@ MlasGemmU8X8Kernel<MLAS_GEMM_U8X8_KERNEL_SSE>(
 const MLAS_GEMM_U8X8_DISPATCH MlasGemmU8X8DispatchSse = {
     MlasGemmU8X8Operation<MLAS_GEMM_U8X8_KERNEL_SSE>,
     nullptr,
-    nullptr,
     MLAS_GEMM_U8X8_KERNEL_SSE::PackedK,
     0,
 };
