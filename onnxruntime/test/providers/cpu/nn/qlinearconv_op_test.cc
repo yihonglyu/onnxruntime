@@ -393,70 +393,10 @@ class QLinearConvOpTester {
                             strides[n] +
                         1);
     }
-    const int64_t* output_shape = Y_shape.data() + 2;
     Y_data.resize(ShapeSize(Y_shape));
-
-    const int64_t input_image_size = std::accumulate(
-        input_shape, input_shape + kernel_rank, 1LL, std::multiplies<int64_t>());
-    const int64_t kernel_size = std::accumulate(
-        kernel_shape, kernel_shape + kernel_rank, 1LL, std::multiplies<int64_t>());
-    const int32_t X_zero_point = X_.zero_point_;
-    const int32_t W_zero_point = W_.zero_point_;
-
-    const ActType* Xdata = X_.data_.data();
-    ActType* Ydata = Y_data.data();
-
-    RequantizeValues<ActType> requantize_values(output_zero_point_);
-
-    for (int64_t batch = 0; batch < batch_count; batch++) {
-      const FilterType* weight_group = W_.data_.data();
-      for (int64_t group = 0; group < group_count; group++) {
-        const FilterType* weight_row = weight_group;
-
-        for (int64_t oc = 0; oc < group_output_channels; oc++) {
-          int64_t channel_index = group * group_output_channels + oc;
-          int32_t bias = B_.empty() ? 0 : B_[channel_index];
-          float weight_scale = W_.scale_[(W_.scale_.size() == 1) ? 0 : channel_index];
-          float requantize_scale = (X_.scale_[0] * weight_scale) / output_scale_;
-
-          std::vector<int64_t> d_output(kernel_rank, 0);
-          std::vector<int64_t> d_kernel(kernel_rank, 0);
-          do {
-            int32_t sum = bias;
-            const ActType* input_image = Xdata;
-            const FilterType* weight_data = weight_row;
-            for (int64_t ic = 0; ic < group_input_channels; ic++) {
-              do {
-                int64_t input_offset = 0;
-                bool is_padding = false;
-                for (size_t axis = 0; axis < kernel_rank; ++axis) {
-                  int64_t input_dim = d_kernel[axis] * dilations[axis] + d_output[axis] * strides[axis] - pads[axis];
-                  is_padding |= !math::is_a_ge_zero_and_a_lt_b(input_dim, input_shape[axis]);
-                  input_offset *= input_shape[axis];
-                  input_offset += input_dim;
-                }
-                int32_t w_value = static_cast<int32_t>(*weight_data++) - W_zero_point;
-                if (!is_padding) {
-                  int32_t x_value = static_cast<int32_t>(input_image[input_offset]) - X_zero_point;
-                  sum += x_value * w_value;
-                }
-              } while (NextPosition(kernel_rank, kernel_shape, d_kernel.data()));
-
-              input_image += input_image_size;
-            }
-            *Ydata++ = RequantizeOutput<ActType>(sum, requantize_scale, requantize_values);
-
-          } while (NextPosition(kernel_rank, output_shape, d_output.data()));
-
-          weight_row += group_input_channels * kernel_size;
-        }
-
-        Xdata += group_input_channels * input_image_size;
-        weight_group += group_output_channels * group_input_channels * kernel_size;
-      }
-    }
   }
 
+ public:
   void Run(bool all_input_initializer_except_x) {
     OpTester test("QLinearConv", 10);
 
@@ -515,7 +455,6 @@ class QLinearConvOpTester {
     test.Run(OpTester::ExpectResult::kExpectSuccess, "");
   }
 
- public:
   QLinearConvOpTester() {
   }
 
@@ -535,6 +474,10 @@ class QLinearConvOpTester {
 
   void SetWeightScales(const std::vector<float>& scales) {
     W_.scale_ = scales;
+  }
+
+  void SetWeightZeropoint(const T2 z) {
+    W_.zero_point_ = z;
   }
 
   void GenerateRandomBias() {
@@ -665,6 +608,22 @@ TEST(QLinearConvTest, Conv3D_U8S8) {
   test.SetPads({1, 1, 1, 1, 1, 1});
   test.SetOutputScaleAndZeroPoint(.55f, 54);
   test.Run();
+}
+
+TEST(QLinearConvTest, Conv2D_U8S8_big) {
+  SetThreadAffinityMask(GetCurrentThread(), 1);
+
+  int64_t channels = 512;
+  QLinearConvOpTester<uint8_t, int8_t> test;
+  test.GenerateRandomInput({1, channels, 100, 100}, .95f, 4);
+  test.GenerateRandomWeights({128, channels, 5, 5}, .85f, 2);
+  test.GenerateRandomBias();
+  test.SetPads({1, 1, 1, 1});
+  test.SetOutputScaleAndZeroPoint(.55f, 54);
+  test.Run(true);
+
+  test.SetWeightZeropoint(0);
+  test.Run(true);
 }
 
 TEST(QLinearConvTest, Conv1D_U8S8_Pointwise) {

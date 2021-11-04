@@ -267,7 +267,7 @@ class OpTester {
   //        will find and run the CPU v2 implementation, but will not match the GPU v1 implementation.
   //        OpTester will say it was successful as at least one EP ran, and the GPU implementation of v1 no longer has
   //        test coverage.
-  explicit OpTester(const char* op, int opset_version = 7, const char* domain = onnxruntime::kOnnxDomain, bool verify_output = true)
+  explicit OpTester(const char* op, int opset_version = 7, const char* domain = onnxruntime::kOnnxDomain, bool verify_output = false)
       : op_(op), domain_(domain), opset_version_(opset_version), verify_output_(verify_output) {
     if (opset_version_ < 0) {
       static int latest_onnx_version =

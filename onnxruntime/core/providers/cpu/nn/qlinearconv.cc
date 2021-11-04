@@ -422,6 +422,7 @@ Status QLinearConv<ActType>::UseSharedPrePackedBuffers(std::vector<BufferUniqueP
 
 template <typename ActType>
 Status QLinearConv<ActType>::Compute(OpKernelContext* context) const {
+  uint64_t t0 = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
   const Tensor* X = context->Input<Tensor>(InputTensors::IN_X);
   const Tensor* W = is_W_packed_ ? nullptr : context->Input<Tensor>(InputTensors::IN_W);
   const auto& W_shape = W ? W->Shape() : W_shape_;
@@ -794,6 +795,8 @@ Status QLinearConv<ActType>::Compute(OpKernelContext* context) const {
     Xdata += X_offset;
     Ydata += Y_offset;
   }
+  uint64_t t1 = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+  printf("qconv time: %d\n", int(t1 - t0));
 
   return Status::OK();
 }
