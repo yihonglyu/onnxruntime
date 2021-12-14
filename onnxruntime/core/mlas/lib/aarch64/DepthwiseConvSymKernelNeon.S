@@ -6,7 +6,7 @@ Licensed under the MIT License.
 
 Module Name:
 
-    DepthwiseConvSymKernelNeon.S
+    DepthwiseConvSymKernelNeon.asm
 
 Abstract:
 
@@ -23,7 +23,7 @@ Abstract:
 //
 
         .equ    .LConvSymDepthwiseKernelFrame_SavedNeonRegisters,   (8 * 8)
-        .equ    .LConvSymDepthwiseKernelFrame_SavedRegisters,           .LConvSymDepthwiseKernelFrame_SavedNeonRegisters
+        .equ    .LConvSymDepthwiseKernelFrame_SavedRegisters,       16 + .LConvSymDepthwiseKernelFrame_SavedNeonRegisters
         .equ    .LConvSymDepthwiseKernelFrame_PostProcessParams,    0 + .LConvSymDepthwiseKernelFrame_SavedRegisters
         .equ    .LConvSymDepthwiseKernelFrame_KernelFlags,          8 + .LConvSymDepthwiseKernelFrame_SavedRegisters
 
@@ -80,12 +80,13 @@ Return Value:
 
         FUNCTION_ENTRY MlasConvSymDepthwiseKernelNeon
 
-        stp     d8,d9,[sp,#-64]!
+        stp     d8,d9,[sp,#-80]!
         ldr     x8,[sp,#.LConvSymDepthwiseKernelFrame_PostProcessParams]
         mov     w10,#0x80808080
         stp     d10,d11,[sp,#16]
         stp     d12,d13,[sp,#32]
         stp     d14,d15,[sp,#48]
+        stp     x19,x20,[sp,#64]
         dup     v8.4s,w10                   // bit flip vector
         ldr     x16,[x8,#.LConvSymDepthwisePostProcessParams_Bias]
         cmp     x7,2
@@ -105,116 +106,158 @@ Return Value:
 //
 // Process an input block of length Channels for each element of the kernel.
 //
-// Filter:  v0,
-//          v1       // unroll
+// Filter:  x16|x17 - v0|v1
+//          x19|x20 - v0|v1  // unroll
 // Input:
-// x0  -> x10 -> v4
-//     -> x12 -> v2  // unroll
-// x9  -> x11 -> v6
-//     -> x13 -> v10 // unroll
-// x14 -> x10 -> v4
-//     -> x12 -> v2  // unroll
-// x15 -> x11 -> v6
-//     -> x13 -> v10 // unroll
+// x0  -> x10 -> v4|v5
+//     -> x12 -> v2|v3   // unroll
+// x9  -> x11 -> v6|v7
+//     -> x13 -> v10|v11 // unroll
+// x14 -> x10 -> v4|v5
+//     -> x12 -> v2|v3   // unroll
+// x15 -> x11 -> v6|v7
+//     -> x13 -> v10|v11 // unroll
 //
 
 .LProcess16Channels:
         cmp     x3,1
+        add     x6,x5,#8
         ldp     q26,q27,[x16]
         b.eq    .LProcC16P1
 
-        ldr     x12,[x0],#8                 // x12 -> A0 iter 1
-        ldr     x13,[x9],#8                 // x13 -> A1 iter 1
         mov     v28.16b,v24.16b
+        ldr     x12,[x0],#8                 // x12 -> A0 iter 1
         mov     v29.16b,v25.16b
-        ld1     {v0.16b},[x1],x4            // filter iter 0
-        ld1     {v1.16b},[x1],x4            // filter iter 1
+        ldr     x13,[x9],#8                 // x13 -> A1 iter 1
+        ldr     x16,[x1]                    // filter L iter 0
+        ldr     x17,[x1,#8]                 // filter H iter 0
         mov     v16.16b,v24.16b
+        add     x1,x1,x4
+        ldr     x19,[x1]                    // filter L iter 1
+        ldr     x20,[x1,#8]                 // filter H iter 1
         mov     v17.16b,v25.16b
-        ldr     q4,[x10,x5]                 // A0 iter 0
+        add     x1,x1,x4
+        ldr     d4,[x10,x5]                 // A0 L iter 0
+        ldr     d5,[x10,x6]                 // A0 H iter 0
         mov     v20.16b,v24.16b
         ldr     x10,[x14],#8                // x10 -> A2 iter 0
         mov     v21.16b,v25.16b
-        ldr     q6,[x11,x5]                 // A1 iter 0
+        ldr     d6,[x11,x5]                 // A1 L iter 0
+        ldr     d7,[x11,x6]                 // A1 H iter 0
         mov     v30.16b,v26.16b
         ldr     x11,[x15],#8                // x11 -> A3 iter 0
         mov     v31.16b,v27.16b
-        ldr     q2,[x12,x5]                 // A0 iter 1
+        ldr     d2,[x12,x5]                 // A0 L iter 1
+        ldr     d3,[x12,x6]                 // A0 H iter 1
         subs    x3,x3,2                     // decrement input blocks remaining
         mov     v18.16b,v26.16b
         ldr     x12,[x14],#8                // x12 -> A2 iter 1
         mov     v19.16b,v27.16b
-        ldr     q10,[x13,x5]                // A1 iter 1
+        ldr     d10,[x13,x5]                // A1 L iter 1
+        ldr     d11,[x13,x6]                // A1 H iter 1
         mov     v22.16b,v26.16b
         ldr     x13,[x15],#8                // x13 -> A3 iter 1
         mov     v23.16b,v27.16b
+        ins     v0.d[0],x16
+        ins     v1.d[0],x17
+        eor     v4.8b,v4.8b,v8.8b           // fix sign bits
+        eor     v5.8b,v5.8b,v8.8b
 
 .LBlockLoopC16:
 
         //
         // Process 2 pixels, and load next two pixels
         //
-        eor     v4.16b,v4.16b,v8.16b        // fix sign bits
         smull   v12.8h,v0.8b,v4.8b
-        smull2  v13.8h,v0.16b,v4.16b
-        eor     v6.16b,v6.16b,v8.16b
-        ldr     q4,[x10,x5]                 // A2 iter 0
+        ldr     d4,[x10,x5]                 // A2 L iter 0
+        smull   v13.8h,v1.8b,v5.8b
+        ldr     d5,[x10,x6]                 // A2 H iter 0
+        eor     v6.8b,v6.8b,v8.8b
+        eor     v7.8b,v7.8b,v8.8b
+        smull   v14.8h,v0.8b,v6.8b
+        ldr     d6,[x11,x5]                 // A3 L iter 0
+        smull   v15.8h,v1.8b,v7.8b
+        ldr     d7,[x11,x6]                 // A3 H iter 0
+        ins     v0.d[0],x19
+        ins     v1.d[0],x20
+        eor     v2.8b,v2.8b,v8.8b
+        eor     v3.8b,v3.8b,v8.8b
+        smlal   v12.8h,v0.8b,v2.8b
+        ldr     d2,[x12,x5]                 // A2 L iter 1
+        smlal   v13.8h,v1.8b,v3.8b
+        ldr     d3,[x12,x6]                 // A2 H iter 1
+        eor     v10.8b,v10.8b,v8.8b
+        eor     v11.8b,v11.8b,v8.8b
         b.eq    .LEpilogueC16P2
-        smull   v14.8h,v0.8b,v6.8b
-        ldr     x10,[x0],#8                 // x10 -> A0 iter 2
-        smull2  v15.8h,v0.16b,v6.16b
-        eor     v2.16b,v2.16b,v8.16b
+        smlal   v14.8h,v0.8b,v10.8b
+        ldr     d10,[x13,x5]                // A3 L iter 1
+        smlal   v15.8h,v1.8b,v11.8b
         cmp     x3,1
-        ldr     q6,[x11,x5]                 // A3 iter 0
-        smlal   v12.8h,v1.8b,v2.8b
-        ldr     x11,[x9],#8                 // x11 -> A1 iter 2
-        smlal2  v13.8h,v1.16b,v2.16b
-        b.eq    .LEpilogueC16P3             // 3 pixel remains      
-        eor     v10.16b,v10.16b,v8.16b
-        ldr     q2,[x12,x5]                 // A2 iter 1
-        smlal   v14.8h,v1.8b,v10.8b
-        ldr     x12,[x0],#8                 // x12 -> A0 iter 3
-        smlal2  v15.8h,v1.16b,v10.16b
-        ldr     q10,[x13,x5]                // A3 iter 1
+        ldr     d11,[x13,x6]                // A3 H iter 1
         saddw   v24.4s,v24.4s,v12.4h
+        ldr     x10,[x0],#8                 // x10 -> A0 iter 2
         saddw2  v25.4s,v25.4s,v12.8h
-        ldr     x13,[x9],#8                 // x13 -> A1 iter 3
+        ldr     x11,[x9],#8                 // x11 -> A1 iter 2
         saddw   v26.4s,v26.4s,v13.4h
+        b.eq    .LEpilogueC16P3             // 3 pixel remains
+
+        ldr     x12,[x0],#8                 // x12 -> A0 iter 3
         saddw2  v27.4s,v27.4s,v13.8h
+        ldr     x13,[x9],#8                 // x13 -> A1 iter 3
         saddw   v28.4s,v28.4s,v14.4h
+        ins     v0.d[0],x16
         saddw2  v29.4s,v29.4s,v14.8h
+        ins     v1.d[0],x17
         saddw   v30.4s,v30.4s,v15.4h
+        eor     v4.8b,v4.8b,v8.8b
         saddw2  v31.4s,v31.4s,v15.8h
-        eor     v4.16b,v4.16b,v8.16b
-        subs    x3,x3,2                     // decrement input blocks remaining
+        eor     v5.8b,v5.8b,v8.8b
         smull   v12.8h,v0.8b,v4.8b
-        smull2  v13.8h,v0.16b,v4.16b
-        eor     v6.16b,v6.16b,v8.16b
-        ldr     q4,[x10,x5]                 // A0 iter 2
+        ldr     d4,[x10,x5]                 // A0 L iter 2
+        smull   v13.8h,v1.8b,v5.8b
+        ldr     d5,[x10,x6]                 // A0 H iter 2
+        eor     v6.8b,v6.8b,v8.8b
+        eor     v7.8b,v7.8b,v8.8b
         smull   v14.8h,v0.8b,v6.8b
+        ldr     d6,[x11,x5]                 // A1 L iter 2
+        smull   v15.8h,v1.8b,v7.8b
+        ldr     d7,[x11,x6]                 // A1 H iter 2
+        ins     v0.d[0],x19
+        ins     v1.d[0],x20
+        eor     v2.8b,v2.8b,v8.8b
+        eor     v3.8b,v3.8b,v8.8b
+        ldr     x16,[x1]                    // filter L iter 2
+        ldr     x17,[x1,#8]                 // filter H iter 2
+        add     x1,x1,x4
+        subs    x3,x3,2                     // decrement input blocks remaining
+        smlal   v12.8h,v0.8b,v2.8b
+        ldr     d2,[x12,x5]                 // A0 L iter 3
+        smlal   v13.8h,v1.8b,v3.8b
+        ldr     d3,[x12,x6]                 // A0 H iter 3
+        eor     v10.8b,v10.8b,v8.8b
+        eor     v11.8b,v11.8b,v8.8b
+        smlal   v14.8h,v0.8b,v10.8b
+        ldr     d10,[x13,x5]                // A1 L iter 3
+        smlal   v15.8h,v1.8b,v11.8b
+        ldr     d11,[x13,x6]                // A1 H iter 3
+        ldr     x19,[x1]                    // filter L iter 3
+        ldr     x20,[x1,#8]                 // filter H iter 3
+        add     x1,x1,x4
         ldr     x10,[x14],#8                // x10 -> A2 iter 2
-        smull2  v15.8h,v0.16b,v6.16b
-        ldr     q6,[x11,x5]                 // A1 iter 2
-        eor     v2.16b,v2.16b,v8.16b
-        ld1     {v0.16b},[x1],x4            // filter iter 2
-        smlal   v12.8h,v1.8b,v2.8b
-        ldr     x11,[x15],#8                // x11 -> A3 iter 2
-        smlal2  v13.8h,v1.16b,v2.16b
-        eor     v10.16b,v10.16b,v8.16b
-        ldr     q2,[x12,x5]                 // A0 iter 3
-        smlal   v14.8h,v1.8b,v10.8b
-        ldr     x12,[x14],#8                // x12 -> A2 iter 3
-        smlal2  v15.8h,v1.16b,v10.16b
-        ldr     q10,[x13,x5]                // A1 iter 3
         saddw   v16.4s,v16.4s,v12.4h
+        ldr     x11,[x15],#8                // x11 -> A3 iter 2
         saddw2  v17.4s,v17.4s,v12.8h
-        ld1     {v1.16b},[x1],x4            // filter iter 3
+        ldr     x12,[x14],#8                // x12 -> A2 iter 3
         saddw   v18.4s,v18.4s,v13.4h
-        saddw2  v19.4s,v19.4s,v13.8h
         ldr     x13,[x15],#8                // x13 -> A3 iter 3
+        saddw2  v19.4s,v19.4s,v13.8h
+        ins     v0.d[0],x16
         saddw   v20.4s,v20.4s,v14.4h
+        ins     v1.d[0],x17
         saddw2  v21.4s,v21.4s,v14.8h
+        eor     v4.8b,v4.8b,v8.8b           // fix sign bits
         saddw   v22.4s,v22.4s,v15.4h
+        eor     v5.8b,v5.8b,v8.8b
         saddw2  v23.4s,v23.4s,v15.8h
         b       .LBlockLoopC16
 
@@ -223,17 +266,10 @@ Return Value:
         // Loop epilogue (process last 2 pixels) mixed
         // with loading of dequantization params
         //
-        smull   v14.8h,v0.8b,v6.8b
-        smull2  v15.8h,v0.16b,v6.16b
-        ldr     q6,[x11,x5]                 // A3 iter 0
-        eor     v2.16b,v2.16b,v8.16b
-        smlal   v12.8h,v1.8b,v2.8b
-        smlal2  v13.8h,v1.16b,v2.16b
-        eor     v10.16b,v10.16b,v8.16b
-        ldr     q2,[x12,x5]                 // A2 iter 1
-        smlal   v14.8h,v1.8b,v10.8b
-        smlal2  v15.8h,v1.16b,v10.16b
-        ldr     q10,[x13,x5]                // A3 iter 1
+        smlal   v14.8h,v0.8b,v10.8b
+        ldr     d10,[x13,x5]                // A3 L iter 1
+        smlal   v15.8h,v1.8b,v11.8b
+        ldr     d11,[x13,x6]                // A3 H iter 1
         saddw   v24.4s,v24.4s,v12.4h
         saddw2  v25.4s,v25.4s,v12.8h
         saddw   v26.4s,v26.4s,v13.4h
@@ -243,20 +279,28 @@ Return Value:
         saddw   v30.4s,v30.4s,v15.4h
         saddw2  v31.4s,v31.4s,v15.8h
         ldr     w9,[sp,#.LConvSymDepthwiseKernelFrame_KernelFlags]
-        eor     v4.16b,v4.16b,v8.16b
+        eor     v4.8b,v4.8b,v8.8b
+        eor     v5.8b,v5.8b,v8.8b
         ldr     x12,[x8,#.LConvSymDepthwisePostProcessParams_Scale]
+        ins     v0.d[0],x16
+        ins     v1.d[0],x17
         smull   v12.8h,v0.8b,v4.8b
-        smull2  v13.8h,v0.16b,v4.16b
-        eor     v6.16b,v6.16b,v8.16b
+        smull   v13.8h,v1.8b,v5.8b
+        eor     v6.8b,v6.8b,v8.8b
+        eor     v7.8b,v7.8b,v8.8b
         ldr     w15,[x8,#.LConvSymDepthwisePostProcessParams_ZeroPoint]
         smull   v14.8h,v0.8b,v6.8b
-        smull2  v15.8h,v0.16b,v6.16b
-        eor     v2.16b,v2.16b,v8.16b
-        smlal   v12.8h,v1.8b,v2.8b
-        smlal2  v13.8h,v1.16b,v2.16b
-        eor     v10.16b,v10.16b,v8.16b
-        smlal   v14.8h,v1.8b,v10.8b
-        smlal2  v15.8h,v1.16b,v10.16b
+        smull   v15.8h,v1.8b,v7.8b
+        eor     v2.8b,v2.8b,v8.8b
+        eor     v3.8b,v3.8b,v8.8b
+        ins     v0.d[0],x19
+        ins     v1.d[0],x20
+        smlal   v12.8h,v0.8b,v2.8b
+        smlal   v13.8h,v1.8b,v3.8b
+        eor     v10.8b,v10.8b,v8.8b
+        eor     v11.8b,v11.8b,v8.8b
+        smlal   v14.8h,v0.8b,v10.8b
+        smlal   v15.8h,v1.8b,v11.8b
         tst     w9,#MLAS_CONV_SYM_FLAG_PER_CHANNEL_SCALE
         ld1r    {v4.4s},[x12]               // load scale val
         b.eq    .LSkipScaleVecLoad2
@@ -276,26 +320,31 @@ Return Value:
 .LProcC16P1:
         //
         // Channel 16 kernel size 1
-        // TODO!! is this reachable at all?
+        // TODO!! seperate kernel for this?
         //
         ldr     x12,[x14],#8                // x12 -> A2
         ldr     x13,[x15],#8                // x13 -> A3
         mov     v28.16b,v24.16b
         mov     v29.16b,v25.16b
-        ld1     {v0.16b},[x1]
+        ldr     d0,[x1]
+        ldr     d1,[x1,#8]
         mov     v16.16b,v24.16b
         mov     v17.16b,v25.16b
-        ldr     q4,[x10,x5]
+        ldr     d4,[x10,x5]
+        ldr     d5,[x10,x6]
         mov     v20.16b,v24.16b
         mov     v21.16b,v25.16b
-        ldr     q6,[x11,x5]
+        ldr     d6,[x11,x5]
+        ldr     d7,[x11,x6]
         mov     v30.16b,v26.16b
         mov     v31.16b,v27.16b
-        ldr     q2,[x12,x5]
+        ldr     d2,[x12,x5]
+        ldr     d3,[x12,x6]
         subs    x3,x3,2                     // decrement input blocks remaining
         mov     v18.16b,v26.16b
         mov     v19.16b,v27.16b
-        ldr     q10,[x13,x5]
+        ldr     d10,[x13,x5]
+        ldr     d11,[x13,x6]
         mov     v22.16b,v26.16b
         mov     v23.16b,v27.16b
         b       .LEpilogueC16P1
@@ -305,38 +354,43 @@ Return Value:
         // Loop epilogue (process last 2 pixels) mixed
         // with loading of dequantization params
         //
-        eor     v10.16b,v10.16b,v8.16b
-        ldr     q2,[x12,x5]                 // A2 iter 1
-        smlal   v14.8h,v1.8b,v10.8b
         ldr     x12,[x14],#8                // x12 -> A2 iter 2
-        smlal2  v15.8h,v1.16b,v10.16b
-        ldr     q10,[x13,x5]                // A3 iter 1
-        saddw   v24.4s,v24.4s,v12.4h
-        saddw2  v25.4s,v25.4s,v12.8h
-        ldr     x13,[x15],#8                // x13 -> A3 iter 2
-        saddw   v26.4s,v26.4s,v13.4h
         saddw2  v27.4s,v27.4s,v13.8h
+        ldr     x13,[x15],#8                // x13 -> A3 iter 2
         saddw   v28.4s,v28.4s,v14.4h
+        ins     v0.d[0],x16
         saddw2  v29.4s,v29.4s,v14.8h
+        ins     v1.d[0],x17
         saddw   v30.4s,v30.4s,v15.4h
+        eor     v4.8b,v4.8b,v8.8b
         saddw2  v31.4s,v31.4s,v15.8h
-        eor     v4.16b,v4.16b,v8.16b
+        eor     v5.8b,v5.8b,v8.8b
         smull   v12.8h,v0.8b,v4.8b
-        smull2  v13.8h,v0.16b,v4.16b
-        eor     v6.16b,v6.16b,v8.16b
-        ldr     q4,[x10,x5]                 // A0 iter 2
+        ldr     d4,[x10,x5]                 // A0 L iter 2
+        smull   v13.8h,v1.8b,v5.8b
+        ldr     d5,[x10,x6]                 // A0 H iter 2
+        eor     v6.8b,v6.8b,v8.8b
+        eor     v7.8b,v7.8b,v8.8b
         smull   v14.8h,v0.8b,v6.8b
-        smull2  v15.8h,v0.16b,v6.16b
-        ld1     {v0.16b},[x1]               // filter iter 2
-        ldr     q6,[x11,x5]                 // A1 iter 2
-        eor     v2.16b,v2.16b,v8.16b
-        smlal   v12.8h,v1.8b,v2.8b
-        smlal2  v13.8h,v1.16b,v2.16b
-        eor     v10.16b,v10.16b,v8.16b
-        ldr     q2,[x12,x5]                 // A2 iter 2
-        smlal   v14.8h,v1.8b,v10.8b
-        smlal2  v15.8h,v1.16b,v10.16b
-        ldr     q10,[x13,x5]                // A3 iter 2
+        ldr     d6,[x11,x5]                 // A1 L iter 2
+        smull   v15.8h,v1.8b,v7.8b
+        ldr     d7,[x11,x6]                 // A1 H iter 2
+        ins     v0.d[0],x19
+        ins     v1.d[0],x20
+        eor     v2.8b,v2.8b,v8.8b
+        eor     v3.8b,v3.8b,v8.8b
+        smlal   v12.8h,v0.8b,v2.8b
+        ldr     d2,[x12,x5]                 // A2 L iter 2
+        smlal   v13.8h,v1.8b,v3.8b
+        ldr     d3,[x12,x6]                 // A2 H iter 2
+        eor     v10.8b,v10.8b,v8.8b
+        eor     v11.8b,v11.8b,v8.8b
+        smlal   v14.8h,v0.8b,v10.8b
+        ldr     d10,[x13,x5]                // A3 L iter 2
+        smlal   v15.8h,v1.8b,v11.8b
+        ldr     d11,[x13,x6]                // A3 H iter 2
+        ldr     d0,[x1]                     // filter L iter 2
+        ldr     d1,[x1,#8]                  // filter H iter 2
         saddw   v16.4s,v16.4s,v12.4h
         saddw2  v17.4s,v17.4s,v12.8h
         saddw   v18.4s,v18.4s,v13.4h
@@ -351,14 +405,16 @@ Return Value:
         // Loop epilogue (process last single pixel) mixed with loading of dequantization params
         //
         ldr     w9,[sp,#.LConvSymDepthwiseKernelFrame_KernelFlags]
-        eor     v4.16b,v4.16b,v8.16b
+        eor     v4.8b,v4.8b,v8.8b
+        eor     v5.8b,v5.8b,v8.8b
         ldr     x12,[x8,#.LConvSymDepthwisePostProcessParams_Scale]
         smull   v12.8h,v0.8b,v4.8b
-        smull2  v13.8h,v0.16b,v4.16b
-        eor     v6.16b,v6.16b,v8.16b
+        smull   v13.8h,v1.8b,v5.8b
+        eor     v6.8b,v6.8b,v8.8b
+        eor     v7.8b,v7.8b,v8.8b
         ldr     w15,[x8,#.LConvSymDepthwisePostProcessParams_ZeroPoint]
         smull   v14.8h,v0.8b,v6.8b
-        smull2  v15.8h,v0.16b,v6.16b
+        smull   v15.8h,v1.8b,v7.8b
         saddw   v24.4s,v24.4s,v12.4h
         saddw2  v25.4s,v25.4s,v12.8h
         saddw   v26.4s,v26.4s,v13.4h
@@ -367,12 +423,14 @@ Return Value:
         saddw2  v29.4s,v29.4s,v14.8h
         saddw   v30.4s,v30.4s,v15.4h
         saddw2  v31.4s,v31.4s,v15.8h
-        eor     v2.16b,v2.16b,v8.16b
+        eor     v2.8b,v2.8b,v8.8b
+        eor     v3.8b,v3.8b,v8.8b
         smull   v12.8h,v0.8b,v2.8b
-        smull2  v13.8h,v0.16b,v2.16b
-        eor     v10.16b,v10.16b,v8.16b
+        smull   v13.8h,v1.8b,v3.8b
+        eor     v10.8b,v10.8b,v8.8b
+        eor     v11.8b,v11.8b,v8.8b
         smull   v14.8h,v0.8b,v10.8b
-        smull2  v15.8h,v0.16b,v10.16b
+        smull   v15.8h,v1.8b,v11.8b
         tst     w9,#MLAS_CONV_SYM_FLAG_PER_CHANNEL_SCALE
         ld1r    {v4.4s},[x12]               // load scale val
         b.eq    .LSkipScaleVecLoad
@@ -485,207 +543,101 @@ Return Value:
         b.lo    .LExitKernel                // exit if OutputCount < 4
         str     q20,[x2]
 
+
 .LExitKernel:
+        ldp     x19,x20,[sp,#64]
         ldp     d14,d15,[sp,#48]
         ldp     d12,d13,[sp,#32]
         ldp     d10,d11,[sp,#16]
-        ldp     d8,d9,[sp],#64
+        ldp     d8,d9,[sp],#80
         ret
 
+//
+// Process an input block of length Channels for each element of the kernel.
+//
+// Filter:  v0
+// Input:
+// x0  -> x10 -> v4
+// x9  -> x11 -> v6
+// x14 -> x12 -> v2
+// x15 -> x13 -> v10
+//
 .LProcess8Channels:
-        cmp     x3,1
-        b.eq    .LProcC8P1
-
-        ldr     x12,[x0],#8                 // x12 -> A0 iter 1
-        ldr     x13,[x9],#8                 // x13 -> A1 iter 1
-        ld1     {v0.8b},[x1],x4             // filter iter 0
-        ld1     {v1.8b},[x1],x4             // filter iter 1
-        ldr     d4,[x10,x5]                 // A0 iter 0
-        ldr     x10,[x14],#8                // x10 -> A2 iter 0
+        ldr     x12,[x14],#8                // x12 -> A2
+        ldr     x13,[x15],#8                // x13 -> A3
         mov     v28.16b,v24.16b
-        ldr     d6,[x11,x5]                 // A1 iter 0
         mov     v29.16b,v25.16b
-        ldr     x11,[x15],#8                // x11 -> A3 iter 0
         mov     v16.16b,v24.16b
-        ldr     d2,[x12,x5]                 // A0 iter 1
         mov     v17.16b,v25.16b
-        ldr     x12,[x14],#8                // x12 -> A2 iter 1
-        subs    x3,x3,2                     // decrement input blocks remaining
-        ldr     d10,[x13,x5]                // A1 iter 1
+        ld1     {v0.d}[0],[x1],x4
+        subs    x3,x3,1                     // decrement input blocks remaining
+        ldr     d4,[x10,x5]
+        ldr     d6,[x11,x5]
+        ldr     d2,[x12,x5]
+        ldr     d10,[x13,x5]
         mov     v20.16b,v24.16b
-        ldr     x13,[x15],#8                // x13 -> A3 iter 1
         mov     v21.16b,v25.16b
 
 .LBlockLoopC8:
-        //
-        // Process 2 pixels, and load next two pixels
-        //
+        b.ls    .LDequantizeC8
+        ldr     x10,[x0],#8                 // x10 -> A0
+        ldr     x11,[x9],#8                 // x11 -> A1
+        ldr     x12,[x14],#8                // x12 -> A2
+        ldr     x13,[x15],#8                // x13 -> A3
         eor     v4.8b,v4.8b,v8.8b           // fix sign bits
         eor     v6.8b,v6.8b,v8.8b
-        smull   v12.8h,v0.8b,v4.8b
-        ldr     d4,[x10,x5]                 // A2 iter 0
-        smull   v14.8h,v0.8b,v6.8b
-        b.eq    .LEpilogueC8P2
-        ldr     x10,[x0],#8                 // x10 -> A0 iter 2
         eor     v2.8b,v2.8b,v8.8b
         eor     v10.8b,v10.8b,v8.8b
-        ldr     d6,[x11,x5]                 // A3 iter 0
-        cmp     x3,1
-        smlal   v12.8h,v1.8b,v2.8b
-        ldr     x11,[x9],#8                 // x11 -> A1 iter 2
-        smlal   v14.8h,v1.8b,v10.8b
-        ldr     d2,[x12,x5]                 // A2 iter 1
-        b.eq    .LEpilogueC8P3              // 3 pixel remains      
-        ldr     d10,[x13,x5]                // A3 iter 1
-        saddw   v24.4s,v24.4s,v12.4h
-        ldr     x12,[x0],#8                 // x12 -> A0 iter 3
-        saddw2  v25.4s,v25.4s,v12.8h
-        ldr     x13,[x9],#8                 // x13 -> A1 iter 3
-        saddw   v28.4s,v28.4s,v14.4h
-        saddw2  v29.4s,v29.4s,v14.8h
-        eor     v4.8b,v4.8b,v8.8b
-        eor     v6.8b,v6.8b,v8.8b
-        subs    x3,x3,2                     // decrement input blocks remaining
-        smull   v12.8h,v0.8b,v4.8b
-        ldr     d4,[x10,x5]                 // A0 iter 2
-        smull   v14.8h,v0.8b,v6.8b
-        ldr     x10,[x14],#8                // x10 -> A2 iter 2
-        ldr     d6,[x11,x5]                 // A1 iter 2
-        eor     v2.8b,v2.8b,v8.8b
-        eor     v10.8b,v10.8b,v8.8b
-        ld1     {v0.8b},[x1],x4             // filter iter 2
-        smlal   v12.8h,v1.8b,v2.8b
-        ldr     x11,[x15],#8                // x11 -> A3 iter 2
-        ldr     d2,[x12,x5]                 // A0 iter 3
-        smlal   v14.8h,v1.8b,v10.8b
-        ldr     x12,[x14],#8                // x12 -> A2 iter 3
-        saddw   v16.4s,v16.4s,v12.4h
-        ldr     d10,[x13,x5]                // A1 iter 3
-        saddw2  v17.4s,v17.4s,v12.8h
-        ld1     {v1.8b},[x1],x4             // filter iter 3
-        saddw   v20.4s,v20.4s,v14.4h
-        ldr     x13,[x15],#8                // x13 -> A3 iter 3
-        saddw2  v21.4s,v21.4s,v14.8h
+        smull   v5.8h,v0.8b,v4.8b
+        smull   v7.8h,v0.8b,v6.8b
+        smull   v3.8h,v0.8b,v2.8b
+        smull   v11.8h,v0.8b,v10.8b
+        add     x10,x10,x5
+        add     x11,x11,x5
+        add     x12,x12,x5
+        add     x13,x13,x5
+        ldr     d4,[x10]
+        ld1     {v0.d}[0],[x1],x4
+        ldr     d6,[x11]
+        ldr     d2,[x12]
+        ldr     d10,[x13]
+        saddw   v24.4s,v24.4s,v5.4h
+        saddw2  v25.4s,v25.4s,v5.8h
+        saddw   v28.4s,v28.4s,v7.4h
+        saddw2  v29.4s,v29.4s,v7.8h
+        subs    x3,x3,1                     // decrement input blocks remaining
+        saddw   v16.4s,v16.4s,v3.4h
+        saddw2  v17.4s,v17.4s,v3.8h
+        saddw   v20.4s,v20.4s,v11.4h
+        saddw2  v21.4s,v21.4s,v11.8h
         b       .LBlockLoopC8
 
-.LEpilogueC8P2:
-        //
-        // Loop epilogue (process last 2 pixels) mixed
-        // with loading of dequantization params
-        //
-        ldr     d6,[x11,x5]                 // A3 iter 0
-        eor     v2.8b,v2.8b,v8.8b
-        eor     v10.8b,v10.8b,v8.8b
-        smlal   v12.8h,v1.8b,v2.8b
-        ldr     d2,[x12,x5]                 // A2 iter 1
-        smlal   v14.8h,v1.8b,v10.8b
-        ldr     d10,[x13,x5]                // A3 iter 1
-        saddw   v24.4s,v24.4s,v12.4h
-        saddw2  v25.4s,v25.4s,v12.8h
-        saddw   v28.4s,v28.4s,v14.4h
-        saddw2  v29.4s,v29.4s,v14.8h
+.LDequantizeC8:
         ldr     w9,[sp,#.LConvSymDepthwiseKernelFrame_KernelFlags]
-        eor     v4.8b,v4.8b,v8.8b
-        eor     v6.8b,v6.8b,v8.8b
-        smull   v12.8h,v0.8b,v4.8b
         ldr     x12,[x8,#.LConvSymDepthwisePostProcessParams_Scale]
-        smull   v14.8h,v0.8b,v6.8b
-        ldr     w15,[x8,#.LConvSymDepthwisePostProcessParams_ZeroPoint]
-        eor     v2.8b,v2.8b,v8.8b
-        eor     v10.8b,v10.8b,v8.8b
-        smlal   v12.8h,v1.8b,v2.8b
-        smlal   v14.8h,v1.8b,v10.8b
-        tst     w9,#MLAS_CONV_SYM_FLAG_PER_CHANNEL_SCALE
-        ld1r    {v4.4s},[x12]               // load scale val
-        b.eq    .LSkipScaleVecLoad2C8
-        ldp     q4,q11,[x12],#32            // load scale vector if per channel
-.LSkipScaleVecLoad2C8:
-        saddw   v16.4s,v16.4s,v12.4h
-        saddw2  v17.4s,v17.4s,v12.8h
-        saddw   v20.4s,v20.4s,v14.4h
-        saddw2  v21.4s,v21.4s,v14.8h
-        b       .LDequantC8
-
-.LProcC8P1:
-        //
-        // Channel 8 kernel size 1
-        // TODO!! is this reachable at all?
-        //
-        ldr     x12,[x14],#8                // x12 -> A2
-        mov     v28.16b,v24.16b
-        ldr     x13,[x15],#8                // x13 -> A3
-        mov     v29.16b,v25.16b
-        ld1     {v0.8b},[x1]
-        mov     v16.16b,v24.16b
-        ldr     d4,[x10,x5]
-        mov     v17.16b,v25.16b
-        ldr     d6,[x11,x5]
-        mov     v20.16b,v24.16b
-        ldr     d2,[x12,x5]
-        subs    x3,x3,2                     // decrement input blocks remaining
-        ldr     d10,[x13,x5]
-        mov     v21.16b,v25.16b
-        b       .LEpilogueC8P1
-
-.LEpilogueC8P3:
-        //
-        // Loop epilogue (process 2 of last 3 pixels)
-        //
-        ldr     x12,[x14],#8                // x12 -> A2 iter 2
-        ldr     d10,[x13,x5]                // A3 iter 1
-        saddw   v24.4s,v24.4s,v12.4h
-        saddw2  v25.4s,v25.4s,v12.8h
-        ldr     x13,[x15],#8                // x13 -> A3 iter 2
-        saddw   v28.4s,v28.4s,v14.4h
-        saddw2  v29.4s,v29.4s,v14.8h
-        eor     v4.8b,v4.8b,v8.8b
+        eor     v4.8b,v4.8b,v8.8b           // fix sign bits
         eor     v6.8b,v6.8b,v8.8b
-        smull   v12.8h,v0.8b,v4.8b
-        ldr     d4,[x10,x5]                 // A0 iter 2
-        smull   v14.8h,v0.8b,v6.8b
-        ld1     {v0.8b},[x1]                // filter iter 2
         eor     v2.8b,v2.8b,v8.8b
         eor     v10.8b,v10.8b,v8.8b
-        ldr     d6,[x11,x5]                 // A1 iter 2
-        smlal   v12.8h,v1.8b,v2.8b
-        ldr     d2,[x12,x5]                 // A2 iter 2
-        smlal   v14.8h,v1.8b,v10.8b
-        ldr     d10,[x13,x5]                // A3 iter 2
-        saddw   v16.4s,v16.4s,v12.4h
-        saddw2  v17.4s,v17.4s,v12.8h
-        saddw   v20.4s,v20.4s,v14.4h
-        saddw2  v21.4s,v21.4s,v14.8h
-
-.LEpilogueC8P1:
-        //
-        // Loop epilogue (process last single pixel) mixed with loading of dequantization params
-        //
-        ldr     w9,[sp,#.LConvSymDepthwiseKernelFrame_KernelFlags]
-        eor     v4.8b,v4.8b,v8.8b
-        eor     v6.8b,v6.8b,v8.8b
-        ldr     x12,[x8,#.LConvSymDepthwisePostProcessParams_Scale]
-        smull   v12.8h,v0.8b,v4.8b
+        smull   v5.8h,v0.8b,v4.8b
+        smull   v7.8h,v0.8b,v6.8b
+        smull   v3.8h,v0.8b,v2.8b
+        smull   v11.8h,v0.8b,v10.8b
         ldr     w15,[x8,#.LConvSymDepthwisePostProcessParams_ZeroPoint]
-        smull   v14.8h,v0.8b,v6.8b
-        saddw   v24.4s,v24.4s,v12.4h
-        saddw2  v25.4s,v25.4s,v12.8h
-        saddw   v28.4s,v28.4s,v14.4h
-        saddw2  v29.4s,v29.4s,v14.8h
-        eor     v2.8b,v2.8b,v8.8b
-        eor     v10.8b,v10.8b,v8.8b
-        smull   v12.8h,v0.8b,v2.8b
-        smull   v14.8h,v0.8b,v10.8b
+        saddw   v24.4s,v24.4s,v5.4h
+        saddw2  v25.4s,v25.4s,v5.8h
         tst     w9,#MLAS_CONV_SYM_FLAG_PER_CHANNEL_SCALE
-        ld1r    {v4.4s},[x12]               // load scale val
+        ld1r    {v4.4s},[x12]               // load scale Value
         b.eq    .LSkipScaleVecLoadC8
-        ldp     q4,q11,[x12]                // load scale vector if per channel
+        ldp     q4,q5,[x12]                 // load scale vector
 .LSkipScaleVecLoadC8:
-        saddw   v16.4s,v16.4s,v12.4h
-        saddw2  v17.4s,v17.4s,v12.8h
-        saddw   v20.4s,v20.4s,v14.4h
-        saddw2  v21.4s,v21.4s,v14.8h
+        saddw   v28.4s,v28.4s,v7.4h
+        saddw2  v29.4s,v29.4s,v7.8h
+        saddw   v16.4s,v16.4s,v3.4h
+        saddw2  v17.4s,v17.4s,v3.8h
+        saddw   v20.4s,v20.4s,v11.4h
+        saddw2  v21.4s,v21.4s,v11.8h
 
-.LDequantC8:
         scvtf   v24.4s,v24.4s               // convert to float
         scvtf   v25.4s,v25.4s
         scvtf   v28.4s,v28.4s
@@ -695,16 +647,16 @@ Return Value:
         scvtf   v20.4s,v20.4s
         scvtf   v21.4s,v21.4s
         b.ne    .LSkipScaleBroadcastC8
-        mov     v11.16b,v4.16b               // broadcast scale val if not per channel
+        mov     v5.16b,v4.16b
 .LSkipScaleBroadcastC8:
         fmul    v24.4s,v24.4s,v4.4s         // multiply by scale
-        fmul    v25.4s,v25.4s,v11.4s
+        fmul    v25.4s,v25.4s,v5.4s
         fmul    v28.4s,v28.4s,v4.4s
-        fmul    v29.4s,v29.4s,v11.4s
+        fmul    v29.4s,v29.4s,v5.4s
         fmul    v16.4s,v16.4s,v4.4s
-        fmul    v17.4s,v17.4s,v11.4s
+        fmul    v17.4s,v17.4s,v5.4s
         fmul    v20.4s,v20.4s,v4.4s
-        fmul    v21.4s,v21.4s,v11.4s
+        fmul    v21.4s,v21.4s,v5.4s
         fcvtns  v24.4s,v24.4s               // convert to int
         fcvtns  v25.4s,v25.4s
         fcvtns  v28.4s,v28.4s
@@ -733,12 +685,15 @@ Return Value:
         cmp     x7,2                        // OutputCount < 2 ?
         st1     {v24.8b},[x2],x4
         b.lo    .LExitKernel                // exit if OutputCount < 2
+
         st1     {v28.8b},[x2],x4
         b.ls    .LExitKernel                // exit if OutputCount <=2
+
         cmp     x7,4                        // OutputCount < 4 ?
         st1     {v16.8b},[x2],x4
         b.lo    .LExitKernel                // exit if OutputCount < 4
-        str     d20,[x2]
+
+        st1     {v20.8b},[x2],x4
         b       .LExitKernel
 
         .end
