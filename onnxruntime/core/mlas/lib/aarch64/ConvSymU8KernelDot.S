@@ -25,7 +25,7 @@ Abstract:
 // Stack frame layout for the symmetric convolution kernel.
 // d8-d15, x19-x30 need to be preserved if used
 //
-        .equ    .LConvSymFrame_SavedRegisters,       (8 * 8)
+        .equ    .LConvSymFrame_SavedRegisters,       (4 * 8)
         .equ    .LConvSymFrame_PostProcessParams,    0 + .LConvSymFrame_SavedRegisters
         .equ    .LConvSymFrame_KernelFlags,          8 + .LConvSymFrame_SavedRegisters
 
@@ -86,12 +86,10 @@ Return Value:
 --*/
         FUNCTION_ENTRY MlasConvSymKernelNeonDot
 
-        stp     d8,d9,[sp,#-.LConvSymFrame_SavedRegisters]!
+        stp     x19,x20,[sp,#-.LConvSymFrame_SavedRegisters]!
         ldr     x8,[sp,#.LConvSymFrame_PostProcessParams]
         ldr     w10,[sp,#.LConvSymFrame_KernelFlags]
-        stp     d10,d11,[sp,#16]
-        stp     d12,d13,[sp,#32]
-        stp     x19,x20,[sp,#48]
+        str     d12,[sp,#16]
 
         cmp     x7,2                    // OutputCount < 2 ?
         add     x16,x2,x5               // x16 -> C1
@@ -163,6 +161,10 @@ SkipLoadA2:
         mov     x14,x13
 SkipLoadA3:
         mov     x15,x14
+FinishLoadAPtr:
+        subs    x7,x4,16                // Need 16 input channels for main loop
+        add     x0,x0,8                 // indirect A advance to next pointer, prepare for kernel size loop
+        b.lo    InChannels8
 
 // Register Usage
 //                                            B (x1) -> 4x16
@@ -178,211 +180,90 @@ SkipLoadA3:
 // x15 |v3.b[0]..v3.b[3]| |v19.s[0]_v19.s[3] v23.s[0]_v23.s[3]  v27.s[0]_v27.s[3]   v31.s[0]_v31.s[3]|  x5
 //     ------------------ ----------------------------------------------------------------------------
 
-FinishLoadAPtr:
-        subs    x7,x4,16                // Need 16 input channels for loop
-        add     x0,x0,8                 // indirect A advance to next pointer, prepare for kernel size loop
-        b.lo    InChannels8
-
-        ldr     d0,[x12],8
-        ldr     q4,[x1],16
-        ldr     d1,[x13],8
-        subs    x7,x7,16
-        ldr     d2,[x14],8
-        ldr     d3,[x15],8
-        ldr     q5,[x1],16
-        ldr     q6,[x1],16
-        ldr     q7,[x1],16
-        b.lo    InChLoopEpilogue        // Need 32 input channels for main loop
-
 InputChannelLoop:
-        eor     v0.8b,v0.8b,v12.8b
-        eor     v1.8b,v1.8b,v12.8b
-        SdotByElement    16, 4, 0,0
-        eor     v2.8b,v2.8b,v12.8b
-        SdotByElement    17, 4, 1,0
-        eor     v3.8b,v3.8b,v12.8b
-        ldr     d8,[x12],8
-        SdotByElement    18, 4, 2,0
-        SdotByElement    19, 4, 3,0
+        ldr     q0,[x12],16
         ldr     q4,[x1],16
-        SdotByElement    20, 5, 0,0
-        SdotByElement    21, 5, 1,0
-        ldr     d9,[x13],8
-        SdotByElement    22, 5, 2,0
-        SdotByElement    23, 5, 3,0
+        ldr     q1,[x13],16
+        ldr     q2,[x14],16
+        ldr     q3,[x15],16
+        eor     v0.16b,v0.16b,v12.16b
         ldr     q5,[x1],16
-        SdotByElement    24, 6, 0,0
-        SdotByElement    25, 6, 1,0
-        ldr     d10,[x14],8
-        SdotByElement    26, 6, 2,0
-        SdotByElement    27, 6, 3,0
-        ldr     q6,[x1],16
-        SdotByElement    28, 7, 0,0
-        SdotByElement    29, 7, 1,0
-        ldr     d11,[x15],8
-        SdotByElement    30, 7, 2,0
-        SdotByElement    31, 7, 3,0
-        ldr     q7,[x1],16
-        SdotByElement    16, 4, 0,1
-        SdotByElement    17, 4, 1,1
-        SdotByElement    18, 4, 2,1
-        SdotByElement    19, 4, 3,1
-        ldr     q4,[x1],16
-        SdotByElement    20, 5, 0,1
-        SdotByElement    21, 5, 1,1
-        SdotByElement    22, 5, 2,1
-        SdotByElement    23, 5, 3,1
-        ldr     q5,[x1],16
-        SdotByElement    24, 6, 0,1
-        SdotByElement    25, 6, 1,1
-        SdotByElement    26, 6, 2,1
-        SdotByElement    27, 6, 3,1
-        ldr     q6,[x1],16
-        SdotByElement    28, 7, 0,1
-        SdotByElement    29, 7, 1,1
-        SdotByElement    30, 7, 2,1
-        SdotByElement    31, 7, 3,1
-        eor     v8.8b,v8.8b,v12.8b
-        ldr     q7,[x1],16
-        eor     v9.8b,v9.8b,v12.8b
-        SdotByElement    16, 4, 8,0
-        eor     v10.8b,v10.8b,v12.8b
-        SdotByElement    17, 4, 9,0
-        ldr     d0,[x12],8
-        eor     v11.8b,v11.8b,v12.8b
-        SdotByElement    18, 4,10,0
-        SdotByElement    19, 4,11,0
-        ldr     q4,[x1],16
-        SdotByElement    20, 5, 8,0
-        SdotByElement    21, 5, 9,0
-        ldr     d1,[x13],8
-        SdotByElement    22, 5,10,0
-        SdotByElement    23, 5,11,0
-        ldr     q5,[x1],16
-        SdotByElement    24, 6, 8,0
-        SdotByElement    25, 6, 9,0
-        ldr     d2,[x14],8
-        SdotByElement    26, 6,10,0
-        SdotByElement    27, 6,11,0
-        ldr     q6,[x1],16
-        SdotByElement    28, 7, 8,0
-        SdotByElement    29, 7, 9,0
-        ldr     d3,[x15],8
-        SdotByElement    30, 7,10,0
-        SdotByElement    31, 7,11,0
-        ldr     q7,[x1],16
-        SdotByElement    16, 4, 8,1
-        SdotByElement    17, 4, 9,1
-        SdotByElement    18, 4,10,1
-        SdotByElement    19, 4,11,1
-        ldr     q4,[x1],16
-        SdotByElement    20, 5, 8,1
-        SdotByElement    21, 5, 9,1
-        SdotByElement    22, 5,10,1
-        SdotByElement    23, 5,11,1
-        ldr     q5,[x1],16
-        SdotByElement    24, 6, 8,1
-        SdotByElement    25, 6, 9,1
-        SdotByElement    26, 6,10,1
-        SdotByElement    27, 6,11,1
-        ldr     q6,[x1],16
-        SdotByElement    28, 7, 8,1
-        SdotByElement    29, 7, 9,1
+        eor     v1.16b,v1.16b,v12.16b
+        SdotByElement  16,  4,  0, 0
+        SdotByElement  17,  4,  1, 0
+        eor     v2.16b,v2.16b,v12.16b
+        ldp     q6,q7,[x1],32
+        eor     v3.16b,v3.16b,v12.16b
+        SdotByElement  18,  4,  2, 0
+        SdotByElement  19,  4,  3, 0
+        SdotByElement  20,  5,  0, 0
+        SdotByElement  21,  5,  1, 0
+        SdotByElement  22,  5,  2, 0
+        SdotByElement  23,  5,  3, 0
+        SdotByElement  24,  6,  0, 0
+        SdotByElement  25,  6,  1, 0
+        ldp     q4,q5,[x1],32
+        SdotByElement  26,  6,  2, 0
+        SdotByElement  27,  6,  3, 0
+        SdotByElement  28,  7,  0, 0
+        SdotByElement  29,  7,  1, 0
+        SdotByElement  30,  7,  2, 0
+        SdotByElement  31,  7,  3, 0
+        SdotByElement  16,  4,  0, 1
+        SdotByElement  17,  4,  1, 1
+        ldp     q6,q7,[x1],32
+        SdotByElement  18,  4,  2, 1
+        SdotByElement  19,  4,  3, 1
+        SdotByElement  20,  5,  0, 1
+        SdotByElement  21,  5,  1, 1
+        SdotByElement  22,  5,  2, 1
+        SdotByElement  23,  5,  3, 1
+        SdotByElement  24,  6,  0, 1
+        SdotByElement  25,  6,  1, 1
+        ldp     q4,q5,[x1],32
+        SdotByElement  26,  6,  2, 1
+        SdotByElement  27,  6,  3, 1
+        SdotByElement  28,  7,  0, 1
+        SdotByElement  29,  7,  1, 1
+        SdotByElement  30,  7,  2, 1
+        SdotByElement  31,  7,  3, 1
+        SdotByElement  16,  4,  0, 2
+        SdotByElement  17,  4,  1, 2
+        ldp     q6,q7,[x1],32
+        SdotByElement  18,  4,  2, 2
+        SdotByElement  19,  4,  3, 2
+        SdotByElement  20,  5,  0, 2
+        SdotByElement  21,  5,  1, 2
+        SdotByElement  22,  5,  2, 2
+        SdotByElement  23,  5,  3, 2
+        SdotByElement  24,  6,  0, 2
+        SdotByElement  25,  6,  1, 2
+        ldp     q4,q5,[x1],32
+        SdotByElement  26,  6,  2, 2
+        SdotByElement  27,  6,  3, 2
+        SdotByElement  28,  7,  0, 2
+        SdotByElement  29,  7,  1, 2
+        SdotByElement  30,  7,  2, 2
+        SdotByElement  31,  7,  3, 2
+        SdotByElement  16,  4,  0, 3
+        SdotByElement  17,  4,  1, 3
+        ldp     q6,q7,[x1],32
+        SdotByElement  18,  4,  2, 3
+        SdotByElement  19,  4,  3, 3
+        SdotByElement  20,  5,  0, 3
+        SdotByElement  21,  5,  1, 3
+        SdotByElement  22,  5,  2, 3
+        SdotByElement  23,  5,  3, 3
+        SdotByElement  24,  6,  0, 3
+        SdotByElement  25,  6,  1, 3
+        SdotByElement  26,  6,  2, 3
+        SdotByElement  27,  6,  3, 3
         subs    x7,x7,16                // InputChannels -= 16
-        SdotByElement    30, 7,10,1
-        SdotByElement    31, 7,11,1
-        ldr     q7,[x1],16
+        SdotByElement  28,  7,  0, 3
+        SdotByElement  29,  7,  1, 3
+        SdotByElement  30,  7,  2, 3
+        SdotByElement  31,  7,  3, 3
         b.hs    InputChannelLoop
-
-InChLoopEpilogue:
-        eor     v0.8b,v0.8b,v12.8b
-        eor     v1.8b,v1.8b,v12.8b
-        SdotByElement    16, 4, 0,0
-        eor     v2.8b,v2.8b,v12.8b
-        SdotByElement    17, 4, 1,0
-        eor     v3.8b,v3.8b,v12.8b
-        ldr     d8,[x12],8
-        SdotByElement    18, 4, 2,0
-        SdotByElement    19, 4, 3,0
-        ldr     q4,[x1],16
-        SdotByElement    20, 5, 0,0
-        SdotByElement    21, 5, 1,0
-        ldr     d9,[x13],8
-        SdotByElement    22, 5, 2,0
-        SdotByElement    23, 5, 3,0
-        ldr     q5,[x1],16
-        SdotByElement    24, 6, 0,0
-        SdotByElement    25, 6, 1,0
-        ldr     d10,[x14],8
-        SdotByElement    26, 6, 2,0
-        SdotByElement    27, 6, 3,0
-        ldr     q6,[x1],16
-        SdotByElement    28, 7, 0,0
-        SdotByElement    29, 7, 1,0
-        ldr     d11,[x15],8
-        SdotByElement    30, 7, 2,0
-        SdotByElement    31, 7, 3,0
-        ldr     q7,[x1],16
-        SdotByElement    16, 4, 0,1
-        SdotByElement    17, 4, 1,1
-        SdotByElement    18, 4, 2,1
-        SdotByElement    19, 4, 3,1
-        ldr     q4,[x1],16
-        SdotByElement    20, 5, 0,1
-        SdotByElement    21, 5, 1,1
-        SdotByElement    22, 5, 2,1
-        SdotByElement    23, 5, 3,1
-        ldr     q5,[x1],16
-        SdotByElement    24, 6, 0,1
-        SdotByElement    25, 6, 1,1
-        SdotByElement    26, 6, 2,1
-        SdotByElement    27, 6, 3,1
-        ldr     q6,[x1],16
-        SdotByElement    28, 7, 0,1
-        SdotByElement    29, 7, 1,1
-        SdotByElement    30, 7, 2,1
-        SdotByElement    31, 7, 3,1
-        eor     v8.8b,v8.8b,v12.8b
-        ldr     q7,[x1],16
-        eor     v9.8b,v9.8b,v12.8b
-        SdotByElement    16, 4, 8,0
-        eor     v10.8b,v10.8b,v12.8b
-        SdotByElement    17, 4, 9,0
-        eor     v11.8b,v11.8b,v12.8b
-        SdotByElement    18, 4,10,0
-        SdotByElement    19, 4,11,0
-        ldr     q4,[x1],16
-        SdotByElement    20, 5, 8,0
-        SdotByElement    21, 5, 9,0
-        SdotByElement    22, 5,10,0
-        SdotByElement    23, 5,11,0
-        ldr     q5,[x1],16
-        SdotByElement    24, 6, 8,0
-        SdotByElement    25, 6, 9,0
-        SdotByElement    26, 6,10,0
-        SdotByElement    27, 6,11,0
-        ldr     q6,[x1],16
-        SdotByElement    28, 7, 8,0
-        SdotByElement    29, 7, 9,0
-        SdotByElement    30, 7,10,0
-        SdotByElement    31, 7,11,0
-        ldr     q7,[x1],16
-        SdotByElement    16, 4, 8,1
-        SdotByElement    17, 4, 9,1
-        SdotByElement    18, 4,10,1
-        SdotByElement    19, 4,11,1
-        SdotByElement    20, 5, 8,1
-        SdotByElement    21, 5, 9,1
-        SdotByElement    22, 5,10,1
-        SdotByElement    23, 5,11,1
-        SdotByElement    24, 6, 8,1
-        SdotByElement    25, 6, 9,1
-        SdotByElement    26, 6,10,1
-        SdotByElement    27, 6,11,1
-        SdotByElement    28, 7, 8,1
-        SdotByElement    29, 7, 9,1
-        SdotByElement    30, 7,10,1
-        SdotByElement    31, 7,11,1
 
         tst     x7,15
         b.ne    InChannels8             // 4 ~ 12 InputChannels
@@ -479,15 +360,15 @@ AccumulatorsToFloat:
         sqadd   v25.8h,v25.8h,v4.8h
         sqadd   v26.8h,v26.8h,v4.8h
         sqadd   v27.8h,v27.8h,v4.8h
-        sqxtun   v0.8b,v16.8h
-        sqxtun   v1.8b,v17.8h
-        sqxtun   v2.8b,v18.8h
-        sqxtun   v3.8b,v19.8h
-        sqxtun2  v0.16b,v24.8h
-        sqxtun2  v1.16b,v25.8h
+        sqxtun  v0.8b,v16.8h
+        sqxtun  v1.8b,v17.8h
+        sqxtun  v2.8b,v18.8h
+        sqxtun  v3.8b,v19.8h
+        sqxtun2 v0.16b,v24.8h
+        sqxtun2 v1.16b,v25.8h
         subs    x6,x6,16            // processed 16 output channels
-        sqxtun2  v2.16b,v26.8h
-        sqxtun2  v3.16b,v27.8h
+        sqxtun2 v2.16b,v26.8h
+        sqxtun2 v3.16b,v27.8h
         b.lo    PartialStore
 
         st1     {v3.16b},[x5],16    // Store full 4 x 16
@@ -498,10 +379,8 @@ AccumulatorsToFloat:
         b.hi    OutputChannelLoop
 
 ExitKernel:
-        ldp     x19,x20,[sp,#48]
-        ldp     d12,d13,[sp,#32]
-        ldp     d10,d11,[sp,#16]
-        ldp     d8,d9,[sp],#.LConvSymFrame_SavedRegisters
+        ldr     d12,[sp,#16]
+        ldp     x19,x20,[sp],#.LConvSymFrame_SavedRegisters
         ret
 
 InChannels8:
@@ -514,43 +393,43 @@ InChannels8:
         eor     v0.8b,v0.8b,v12.8b
         ldr     q5,[x1],16
         eor     v1.8b,v1.8b,v12.8b
-        SdotByElement    16, 4, 0,0
-        SdotByElement    17, 4, 1,0
+        SdotByElement  16,  4,  0, 0
+        SdotByElement  17,  4,  1, 0
         eor     v2.8b,v2.8b,v12.8b
-        ldp     q6, q7, [x1], 32
+        ldp     q6,q7,[x1],32
         eor     v3.8b,v3.8b,v12.8b
-        SdotByElement    18, 4, 2,0
-        SdotByElement    19, 4, 3,0
-        SdotByElement    20, 5, 0,0
-        SdotByElement    21, 5, 1,0
-        SdotByElement    22, 5, 2,0
-        SdotByElement    23, 5, 3,0
-        SdotByElement    24, 6, 0,0
-        SdotByElement    25, 6, 1,0
-        ldp     q4, q5, [x1], 32
-        SdotByElement    26, 6, 2,0
-        SdotByElement    27, 6, 3,0
-        SdotByElement    28, 7, 0,0
-        SdotByElement    29, 7, 1,0
-        SdotByElement    30, 7, 2,0
-        SdotByElement    31, 7, 3,0
-        SdotByElement    16, 4, 0,1
-        SdotByElement    17, 4, 1,1
-        ldp     q6, q7, [x1], 32
-        SdotByElement    18, 4, 2,1
-        SdotByElement    19, 4, 3,1
-        SdotByElement    20, 5, 0,1
-        SdotByElement    21, 5, 1,1
-        SdotByElement    22, 5, 2,1
-        SdotByElement    23, 5, 3,1
-        SdotByElement    24, 6, 0,1
-        SdotByElement    25, 6, 1,1
-        SdotByElement    26, 6, 2,1
-        SdotByElement    27, 6, 3,1
-        SdotByElement    28, 7, 0,1
-        SdotByElement    29, 7, 1,1
-        SdotByElement    30, 7, 2,1
-        SdotByElement    31, 7, 3,1
+        SdotByElement  18,  4,  2, 0
+        SdotByElement  19,  4,  3, 0
+        SdotByElement  20,  5,  0, 0
+        SdotByElement  21,  5,  1, 0
+        SdotByElement  22,  5,  2, 0
+        SdotByElement  23,  5,  3, 0
+        SdotByElement  24,  6,  0, 0
+        SdotByElement  25,  6,  1, 0
+        ldp     q4,q5,[x1],32
+        SdotByElement  26,  6,  2, 0
+        SdotByElement  27,  6,  3, 0
+        SdotByElement  28,  7,  0, 0
+        SdotByElement  29,  7,  1, 0
+        SdotByElement  30,  7,  2, 0
+        SdotByElement  31,  7,  3, 0
+        SdotByElement  16,  4,  0, 1
+        SdotByElement  17,  4,  1, 1
+        ldp     q6,q7,[x1],32
+        SdotByElement  18,  4,  2, 1
+        SdotByElement  19,  4,  3, 1
+        SdotByElement  20,  5,  0, 1
+        SdotByElement  21,  5,  1, 1
+        SdotByElement  22,  5,  2, 1
+        SdotByElement  23,  5,  3, 1
+        SdotByElement  24,  6,  0, 1
+        SdotByElement  25,  6,  1, 1
+        SdotByElement  26,  6,  2, 1
+        SdotByElement  27,  6,  3, 1
+        SdotByElement  28,  7,  0, 1
+        SdotByElement  29,  7,  1, 1
+        SdotByElement  30,  7,  2, 1
+        SdotByElement  31,  7,  3, 1
         tbz     x7,2,SkipInCh4
 
 InChannels4:
@@ -560,27 +439,27 @@ InChannels4:
         ldr     s2,[x14],4
         ldr     s3,[x15],4
         eor     v0.8b,v0.8b,v12.8b
-        ldr     q5, [x1], 16
+        ldr     q5,[x1],16
         eor     v1.8b,v1.8b,v12.8b
-        SdotByElement    16, 4, 0,0
-        SdotByElement    17, 4, 1,0
+        SdotByElement  16,  4,  0, 0
+        SdotByElement  17,  4,  1, 0
         eor     v2.8b,v2.8b,v12.8b
-        ldp     q6, q7, [x1], 32
+        ldp     q6,q7,[x1],32
         eor     v3.8b,v3.8b,v12.8b
-        SdotByElement    18, 4, 2,0
-        SdotByElement    19, 4, 3,0
-        SdotByElement    20, 5, 0,0
-        SdotByElement    21, 5, 1,0
-        SdotByElement    22, 5, 2,0
-        SdotByElement    23, 5, 3,0
-        SdotByElement    24, 6, 0,0
-        SdotByElement    25, 6, 1,0
-        SdotByElement    26, 6, 2,0
-        SdotByElement    27, 6, 3,0
-        SdotByElement    28, 7, 0,0
-        SdotByElement    29, 7, 1,0
-        SdotByElement    30, 7, 2,0
-        SdotByElement    31, 7, 3,0
+        SdotByElement  18,  4,  2, 0
+        SdotByElement  19,  4,  3, 0
+        SdotByElement  20,  5,  0, 0
+        SdotByElement  21,  5,  1, 0
+        SdotByElement  22,  5,  2, 0
+        SdotByElement  23,  5,  3, 0
+        SdotByElement  24,  6,  0, 0
+        SdotByElement  25,  6,  1, 0
+        SdotByElement  26,  6,  2, 0
+        SdotByElement  27,  6,  3, 0
+        SdotByElement  28,  7,  0, 0
+        SdotByElement  29,  7,  1, 0
+        SdotByElement  30,  7,  2, 0
+        SdotByElement  31,  7,  3, 0
 
 SkipInCh4:
         subs    x9,x9,8             // ks -= 1
@@ -598,25 +477,25 @@ PartialStore:
         dup     d1,v1.d[1]
         dup     d0,v0.d[1]
 LT8Store:
-        tbz     x6,2,LT4Store
-        str     s3,[x5],4
-        str     s2,[x17],4
-        dup     s3,v3.s[1]
-        dup     s2,v2.s[1]
-        str     s1,[x16],4
-        str     s0,[x2],4
-        dup     s1,v1.s[1]
-        dup     s0,v0.s[1]
+        tbz     x6, 2, LT4Store
+        str     s3, [x5], 4
+        str     s2, [x17], 4
+        dup     s3, v3.s[1]
+        dup     s2, v2.s[1]
+        str     s1, [x16], 4
+        str     s0, [x2], 4
+        dup     s1, v1.s[1]
+        dup     s0, v0.s[1]
 LT4Store:
-        tbz     x6,1, LT2Store
-        str     h3,[x5],2
-        str     h2,[x17],2
-        dup     h3,v3.h[1]
-        dup     h2,v2.h[1]
-        str     h1,[x16],2
-        str     h0,[x2],2
-        dup     h1,v1.h[1]
-        dup     h0,v0.h[1]
+        tbz     x6, 1, LT2Store
+        str     h3, [x5], 2
+        str     h2, [x17], 2
+        dup     h3, v3.h[1]
+        dup     h2, v2.h[1]
+        str     h1, [x16], 2
+        str     h0, [x2], 2
+        dup     h1, v1.h[1]
+        dup     h0, v0.h[1]
 LT2Store:
         tbz     x6,0,ExitKernel
         str     b3,[x5]
