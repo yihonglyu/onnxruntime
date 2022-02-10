@@ -613,7 +613,7 @@ struct MLAS_SYMM_QGEMM_DATA_PARAMS {
     const void* B = 0;
     void* C = nullptr;
     size_t ldc = 0;
-    // TODO!! add re-quantization parameters
+    const MLAS_QGEMM_OUTPUT_PROCESSOR* OutputProcessor = nullptr;
 };
 
 /**

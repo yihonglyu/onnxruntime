@@ -36,6 +36,15 @@ class QLinearMatMul : public MatMulIntegerBase {
   int GetBIdx() const override {
     return IN_B;
   }
+
+  virtual const Tensor* GetAZeroPoint() {
+    return TryGetConstInput(InputTensors::IN_A_ZERO_POINT);
+  }
+
+  virtual const Tensor* GetWZeroPoint() {
+    return TryGetConstInput(InputTensors::IN_B_ZERO_POINT);
+  }
+
 };
 
 }  // namespace onnxruntime

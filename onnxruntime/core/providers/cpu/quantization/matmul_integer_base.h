@@ -41,6 +41,12 @@ class MatMulIntegerBase : public OpKernel {
         std::swap(K, N);
         b_data = quantization::TransPoseInputData(b_data, b_trans_buffer, alloc, N, K);
       }
+
+      if (TrySymmQuantPrepack(alloc, (const int8_t*)(b_data), N, K, a_is_signed)) {
+        is_packed = true;
+        return Status::OK();
+      }
+
       const size_t packed_b_size = MlasGemmPackBSize(N, K, a_is_signed, b_is_signed_);
       if (packed_b_size == 0) {
         return Status::OK();
@@ -126,9 +132,91 @@ class MatMulIntegerBase : public OpKernel {
     return true;
   }
 
+  inline const Tensor* TryGetConstInput(int inputIdx) {
+    const Tensor* tensor = nullptr;
+
+    if (Info().TryGetConstantInput(inputIdx, &tensor)) {
+      return tensor;
+    }
+    return nullptr;
+  }
+
+  /**
+   * @brief Get zero point of Activation tensor. Used by PrePack for symmetric
+   *        quant packing.  Returns nullptr when symmetric quant gemm not
+   *        supported.
+  */
+  virtual const Tensor* GetAZeroPoint() { return nullptr; }
+
+  /**
+   * @brief Get zero point of the weight matrix. Used by PrePack for symmetric
+   *        quant packing. Returns nullptr when symmetric quant gemm not
+   *        supported.
+  */
+  virtual const Tensor* GetWZeroPoint() { return nullptr; }
+
   bool b_is_signed_{true};
   TensorShape b_shape_;
   BufferUniquePtr packed_b_;
+  bool symm_packed_{false};
+
+ private:
+
+  /**
+   * @brief Attempt symmetric quantized pre-packing of weight tensor.
+   * @param alloc         memory allocator
+   * @param weight_data   weight tensor data
+   * @param N             No. columns
+   * @param K             No. rows
+   * @param a_is_signed   Whether activation tensor is signed int8 
+   * @return              true if symmetric quant prepacking successful
+  */
+  bool TrySymmQuantPrepack(AllocatorPtr alloc, const int8_t* weight_data,
+      size_t N, size_t K, bool a_is_signed) {
+
+    if (!b_is_signed_) {
+      // how can it be symmetric if weights are all non-negative?
+      return false;
+    }
+
+    const Tensor* AZeroPoint = GetAZeroPoint();
+    if (nullptr == AZeroPoint || !IsScalarOr1ElementVector(AZeroPoint)) {
+      return false;
+    }
+
+    const Tensor* WZeroPoint = GetWZeroPoint();
+    if (nullptr == WZeroPoint) {
+      return false;
+    }
+
+    int32_t X_zero_point_value;
+    if (a_is_signed) {
+      X_zero_point_value = *(AZeroPoint->template Data<int8_t>());
+    } else {
+      X_zero_point_value = *(AZeroPoint->template Data<uint8_t>());
+    }
+
+    const size_t W_zero_point_size = static_cast<size_t>(WZeroPoint->Shape().Size());
+    const auto* W_zero_point_data = WZeroPoint->Data<int8_t>();
+    if (!std::all_of(W_zero_point_data, W_zero_point_data + W_zero_point_size, [](int8_t v) { return v == 0; })) {
+      // Symmetric means weight zero point must be zero
+      return false;
+    }
+
+    size_t pack_size = MlasSymmQgemmPackBSize(N, K, a_is_signed);
+    if (pack_size == 0) {
+      return false;
+    }
+
+    auto* packed_b_data = alloc->Alloc(pack_size);
+
+    // TODO!! What about sharing prepacked weight? do we need to consider them?
+
+    packed_b_ = BufferUniquePtr(packed_b_data, BufferDeleter(alloc));
+    MlasSymmQgemmPackB(N, K, weight_data, N, a_is_signed, X_zero_point_value, packed_b_data);
+    symm_packed_ = true;
+    return true;
+  }
 };
 
 }  // namespace onnxruntime
