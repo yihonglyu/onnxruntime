@@ -290,6 +290,7 @@ else()
           ${MLAS_SRC_DIR}/aarch64/SgemmKernelNeon.S
           ${MLAS_SRC_DIR}/aarch64/SgemvKernelNeon.S
           ${MLAS_SRC_DIR}/aarch64/SymQgemmS8KernelNeon.S
+          ${MLAS_SRC_DIR}/aarch64/SymQgemmS8KernelNeonLd64.S
           ${MLAS_SRC_DIR}/aarch64/SymQgemmS8KernelSdot.S
           ${MLAS_SRC_DIR}/aarch64/SymQgemmS8KernelSdotLd64.S
           ${MLAS_SRC_DIR}/qgemm_kernel_neon.cpp

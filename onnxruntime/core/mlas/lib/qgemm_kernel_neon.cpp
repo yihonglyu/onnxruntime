@@ -623,6 +623,20 @@ extern "C" {
         const int32_t* ColumnSumVector
         );
 
+    size_t
+    MLASCALL
+    MlasSymQgemmS8KernelNeonLd64(
+        const int8_t* A,
+        const int8_t* B,
+        int32_t* C,
+        size_t PackedCountK,
+        size_t CountM,
+        size_t CountN,
+        size_t ldc,
+        size_t lda,
+        const int32_t* ColumnSumVector
+        );
+
 }
 
 struct MLAS_GEMM_X8S8_KERNEL_NEON {
@@ -1216,8 +1230,35 @@ const MLAS_GEMM_QUANT_DISPATCH MlasGemmX8S8DispatchNeon = {
     MLAS_GEMM_X8S8_KERNEL_NEON::PackedStrides.K,
 };
 
+/**
+ * @brief Type parameter for symmetric qgemm, little core
+ */
+struct MLAS_GEMM_X8S8_KERNEL_NEON_LIT {
+    static constexpr size_t PackedK = MLAS_GEMM_X8S8_KERNEL_NEON::PackedK;
+};
+constexpr size_t MLAS_GEMM_X8S8_KERNEL_NEON_LIT::PackedK;
+
+
+template <>
+MLAS_FORCEINLINE
+size_t MlasSymmQGemmKernel<MLAS_GEMM_X8S8_KERNEL_NEON_LIT>(
+    const int8_t* A,
+    const int8_t* B,
+    int32_t* C,
+    size_t PackedCountK,
+    size_t CountM,
+    size_t CountN,
+    size_t ldc,
+    size_t lda,
+    const int32_t* ColumnSumVector
+)
+{
+    return MlasSymQgemmS8KernelNeonLd64(A, B, C, PackedCountK, CountM, CountN, ldc, lda,
+                                        ColumnSumVector);
+}
+
 const MLAS_SYMM_QGEMM_DISPATCH MlasSymmQgemmS8DispatchNeon = {
-    MlasSymmQGemmPackedOperation<MLAS_GEMM_X8S8_KERNEL_NEON>,
+    MlasSymmQGemmPackedOperation<MLAS_GEMM_X8S8_KERNEL_NEON_LIT>,
     MlasSymmQGemmPackedOperation<MLAS_GEMM_X8S8_KERNEL_NEON>,
     MlasGemmQuantCopyPackB<MLAS_GEMM_X8S8_KERNEL_NEON>,
     4,   // StrideM
