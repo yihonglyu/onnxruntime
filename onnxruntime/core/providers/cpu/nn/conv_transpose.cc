@@ -128,93 +128,6 @@ Status ConvTranspose<T>::DoConvTranspose(OpKernelContext* context, bool dynamic_
   bool has_bias = dynamic_padding ? num_inputs == 4 : num_inputs == 3;
   ORT_RETURN_IF_ERROR(conv_transpose_attrs_.PrepareForCompute(context, has_bias, p, dynamic_padding));
 
-  // Bail out early if one of the dimensions is zero.
-  if (p.Y->Shape().Size() == 0) {
-    return Status::OK();
-  }
-
-  const int64_t input_image_size = p.input_shape.Size();
-  const int64_t X_offset = p.num_input_channels / conv_transpose_attrs_.group * input_image_size;
-  const int64_t Y_offset = p.Y->Shape().Size() / p.Y->Shape()[0] / conv_transpose_attrs_.group;
-  const int64_t W_offset = p.F->Shape().Size() / conv_transpose_attrs_.group;
-  const int64_t kernel_size = TensorShape(p.kernel_shape).Size();
-  const int64_t kernel_dim = p.num_output_channels / conv_transpose_attrs_.group * kernel_size;
-  const int64_t output_size = (p.Y->Shape().Slice(2)).Size();
-
-  AllocatorPtr alloc;
-  ORT_RETURN_IF_ERROR(context->GetTempSpaceAllocator(&alloc));
-
-  const int64_t col_buffer_size = kernel_dim * p.input_shape.Size();
-  auto col_data = alloc->Alloc(SafeInt<size_t>(sizeof(T)) * col_buffer_size);
-  BufferUniquePtr col_buffer(col_data, BufferDeleter(alloc));
-  T* col_buffer_data = static_cast<T*>(col_buffer.get());
-
-  const T* Xdata = p.X->template Data<T>();
-  const T* filter_data = p.F->template Data<T>();
-  T* Ydata = p.Y->template MutableData<T>();
-  TensorShape output_shape = p.Y->Shape().Slice(2);
-
-  for (auto image_id = 0; image_id < p.N; ++image_id) {
-    for (int group_id = 0; group_id < conv_transpose_attrs_.group; ++group_id) {
-      // Weight term
-      math::Gemm<T>(
-          CblasTrans,
-          CblasNoTrans,
-          kernel_dim,
-          input_image_size,
-          p.num_input_channels / conv_transpose_attrs_.group,
-          1,
-          filter_data + group_id * W_offset,
-          Xdata + group_id * X_offset,
-          0,
-          col_buffer_data,
-          thread_pool);
-
-      if (p.X->Shape().NumDimensions() == 4) {
-        math::Col2im<T, CPUMathUtil, StorageOrder::NCHW>(
-            col_buffer_data,
-            p.num_output_channels / conv_transpose_attrs_.group,
-            p.Y->Shape()[2],
-            p.Y->Shape()[3],
-            p.kernel_shape[0],
-            p.kernel_shape[1],
-            p.dilations[0],
-            p.dilations[1],
-            p.pads[0],
-            p.pads[1],
-            p.pads[2],
-            p.pads[3],
-            p.strides[0],
-            p.strides[1],
-            Ydata + group_id * Y_offset,
-            &CPUMathUtil::Instance());
-      } else {
-        math::Col2imNd<T, CPUMathUtil, StorageOrder::NCHW>(
-            col_buffer_data,
-            output_shape.GetDims().data(),
-            p.input_shape.GetDims().data(),
-            kernel_dim,
-            Y_offset,
-            p.kernel_shape.data(),
-            p.strides.data(),
-            p.dilations.data(),
-            p.pads.data(),
-            static_cast<int>(p.kernel_shape.size()),
-            Ydata + group_id * Y_offset,
-            &CPUMathUtil::Instance());
-      }
-    }
-
-    if (p.B != nullptr) {
-      auto Ymatrix = EigenMatrixMap<T>(Ydata, output_size, p.num_output_channels);
-      auto Bvec = ConstEigenVectorMap<T>(p.B->template Data<T>(), p.num_output_channels);
-      Ymatrix.rowwise() += Bvec.transpose();
-    }
-
-    Xdata += X_offset * conv_transpose_attrs_.group;
-    Ydata += Y_offset * conv_transpose_attrs_.group;
-  }
-
   return Status::OK();
 }
 
@@ -254,26 +167,28 @@ Status ConvTranspose<float>::DoConvTranspose(OpKernelContext* context, bool dyna
   float* Ydata = p.Y->template MutableData<float>();
   TensorShape output_shape = p.Y->Shape().Slice(2);
 
-  for (auto image_id = 0; image_id < p.N; ++image_id) {
-    for (int group_id = 0; group_id < conv_transpose_attrs_.group; ++group_id) {
-      // Weight term
-      math::Gemm<float>(
-          p.F ? CblasTrans : CblasNoTrans,
-          CblasNoTrans,
-          kernel_dim,
-          input_image_size,
-          p.num_input_channels / conv_transpose_attrs_.group,
-          1,
-          filter_data + group_id * W_offset,
-          Xdata + group_id * X_offset,
-          0,
-          col_buffer_data,
-          thread_pool);
+  if (!p.F && conv_transpose_attrs_.group == 1 
+      && p.X->Shape().NumDimensions() == 4 
+      && p.num_output_channels >= (concurrency::ThreadPool::DegreeOfParallelism(thread_pool) / 2)) {
+    for (auto image_id = 0; image_id < p.N; ++image_id) {
+      auto conv_worker = [&](ptrdiff_t filterid) {
+        // Weight term
+        math::Gemm<float>(
+            CblasNoTrans,
+            CblasNoTrans,
+            kernel_size,
+            input_image_size,
+            p.num_input_channels,
+            1,
+            filter_data + filterid * p.num_input_channels * kernel_size,
+            Xdata,
+            0,
+            col_buffer_data + filterid * input_image_size * kernel_size,
+            (concurrency::ThreadPool*)nullptr);
 
-      if (p.X->Shape().NumDimensions() == 4) {
         math::Col2im<float, CPUMathUtil, StorageOrder::NCHW>(
-            col_buffer_data,
-            p.num_output_channels / conv_transpose_attrs_.group,
+            col_buffer_data + filterid * input_image_size * kernel_size,
+            1,
             p.Y->Shape()[2],
             p.Y->Shape()[3],
             p.kernel_shape[0],
@@ -286,33 +201,81 @@ Status ConvTranspose<float>::DoConvTranspose(OpKernelContext* context, bool dyna
             p.pads[3],
             p.strides[0],
             p.strides[1],
-            Ydata + group_id * Y_offset,
+            Ydata + filterid * p.Y->Shape()[2] * p.Y->Shape()[3],
             &CPUMathUtil::Instance());
-      } else {
-        math::Col2imNd<float, CPUMathUtil, StorageOrder::NCHW>(
-            col_buffer_data,
-            output_shape.GetDims().data(),
-            p.input_shape.GetDims().data(),
-            kernel_dim,
-            Y_offset,
-            p.kernel_shape.data(),
-            p.strides.data(),
-            p.dilations.data(),
-            p.pads.data(),
-            static_cast<int>(p.kernel_shape.size()),
-            Ydata + group_id * Y_offset,
-            &CPUMathUtil::Instance());
+      };
+      concurrency::ThreadPool::TrySimpleParallelFor(thread_pool, p.num_output_channels, conv_worker);
+
+      if (p.B != nullptr) {
+        auto Ymatrix = EigenMatrixMap<float>(Ydata, output_size, p.num_output_channels);
+        auto Bvec = ConstEigenVectorMap<float>(p.B->template Data<float>(), p.num_output_channels);
+        Ymatrix.rowwise() += Bvec.transpose();
       }
-    }
 
-    if (p.B != nullptr) {
-      auto Ymatrix = EigenMatrixMap<float>(Ydata, output_size, p.num_output_channels);
-      auto Bvec = ConstEigenVectorMap<float>(p.B->template Data<float>(), p.num_output_channels);
-      Ymatrix.rowwise() += Bvec.transpose();
+      Xdata += X_offset * conv_transpose_attrs_.group;
+      Ydata += Y_offset * conv_transpose_attrs_.group;
     }
+  } else {
+    for (auto image_id = 0; image_id < p.N; ++image_id) {
+      for (int group_id = 0; group_id < conv_transpose_attrs_.group; ++group_id) {
+        // Weight term
+        math::Gemm<float>(
+            p.F ? CblasTrans : CblasNoTrans,
+            CblasNoTrans,
+            kernel_dim,
+            input_image_size,
+            p.num_input_channels / conv_transpose_attrs_.group,
+            1,
+            filter_data + group_id * W_offset,
+            Xdata + group_id * X_offset,
+            0,
+            col_buffer_data,
+            thread_pool);
 
-    Xdata += X_offset * conv_transpose_attrs_.group;
-    Ydata += Y_offset * conv_transpose_attrs_.group;
+        if (p.X->Shape().NumDimensions() == 4) {
+          math::Col2im<float, CPUMathUtil, StorageOrder::NCHW>(
+              col_buffer_data,
+              p.num_output_channels / conv_transpose_attrs_.group,
+              p.Y->Shape()[2],
+              p.Y->Shape()[3],
+              p.kernel_shape[0],
+              p.kernel_shape[1],
+              p.dilations[0],
+              p.dilations[1],
+              p.pads[0],
+              p.pads[1],
+              p.pads[2],
+              p.pads[3],
+              p.strides[0],
+              p.strides[1],
+              Ydata + group_id * Y_offset,
+              &CPUMathUtil::Instance());
+        } else {
+          math::Col2imNd<float, CPUMathUtil, StorageOrder::NCHW>(
+              col_buffer_data,
+              output_shape.GetDims().data(),
+              p.input_shape.GetDims().data(),
+              kernel_dim,
+              Y_offset,
+              p.kernel_shape.data(),
+              p.strides.data(),
+              p.dilations.data(),
+              p.pads.data(),
+              static_cast<int>(p.kernel_shape.size()),
+              Ydata + group_id * Y_offset,
+              &CPUMathUtil::Instance());
+        }
+      }
+
+      if (p.B != nullptr) {
+        auto Ymatrix = EigenMatrixMap<float>(Ydata, output_size, p.num_output_channels);
+        auto Bvec = ConstEigenVectorMap<float>(p.B->template Data<float>(), p.num_output_channels);
+        Ymatrix.rowwise() += Bvec.transpose();
+      }
+
+      Xdata += X_offset * conv_transpose_attrs_.group;
+      Ydata += Y_offset * conv_transpose_attrs_.group;
+    }
   }
 
   return Status::OK();
