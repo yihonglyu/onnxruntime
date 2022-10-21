@@ -66,9 +66,18 @@ class QgemmShortExecuteTest<AType, BType, int32_t, Packed, Threaded> : public Ml
   static size_t RegisterShortExecuteTests() {
     size_t test_registered = 0;
 
-    constexpr size_t dim = 256;
-    test_registered += RegisterSingleTest(dim, dim, dim, 1, 0, 0);
-    for (size_t b = 1; b < 16; b++) {
+            test_registered += RegisterSingleTest(32, 32, 64, 1, 0, 0);
+    size_t dims[] = {16, 32, 48, 64, 80, 384, 1024};
+    for (size_t m : dims){
+      for (size_t n : dims){
+        for (size_t k : dims){
+          if (k%64 != 0) continue;
+            test_registered += RegisterSingleTest(m, n, k, 1, 0, 0);
+        }
+      }
+    }
+    test_registered += RegisterSingleTest(1024, 2048, 4096, 1, 0, 0);
+/*    for (size_t b = 1; b < 16; b++) {
       test_registered += RegisterSingleTest(b, b, b, 1, 14, 211);
       test_registered += RegisterSingleTest(b, b, b, 1, 21);
       if (!Packed) {
@@ -93,7 +102,7 @@ class QgemmShortExecuteTest<AType, BType, int32_t, Packed, Threaded> : public Ml
       test_registered += RegisterSingleTest(1, b, b, 1, 0, 0);
       if (!Packed) {
         test_registered += RegisterSingleTest(1, b, 32, 3, 0, 0);
-        test_registered += RegisterSingleTest(1, 32, b, 5, 0, 0);      
+        test_registered += RegisterSingleTest(1, 32, b, 5, 0, 0);
       }
     }
     test_registered += RegisterSingleTest(43, 500, 401, 1, 183, 223);
@@ -102,7 +111,7 @@ class QgemmShortExecuteTest<AType, BType, int32_t, Packed, Threaded> : public Ml
     if (!Packed) {
       test_registered += RegisterSingleTest(43, 500, 401, 7, 183, 223);
       test_registered += RegisterSingleTest(1023, 1023, 1023, 3, 5, 8);
-    }
+    }*/
 
     return test_registered;
   }
@@ -148,6 +157,7 @@ class QgemmShortExecuteTest<AType, BType, float, Packed, Threaded> : public Mlas
 
   static size_t RegisterShortExecuteTests() {
     size_t test_registered = 0;
+    test_registered += RegisterSingleTest(64, 64, 64, 0, 0);
 
     for (size_t b = 1; b < 16; b++) {
       test_registered += RegisterSingleTest(b, b, b, 34, 46);

@@ -174,20 +174,9 @@ configure_tiles()
 {
     // Filling tile configure structure.
     tc.palette_id = 1;
-    // Configure C tiles
-    for (int t = 0; t < 4; ++t) {
-        tc.rows[t] = TILE_M;
-        tc.colb[t] = TILE_N * sizeof(res_type_t);
-    }
-    // Configure A tiles
-    for (int t = 4; t < 6; ++t) {
-        tc.rows[t] = TILE_M;
-        tc.colb[t] = TILE_K * sizeof(type_t);
-    }
-    // Configure B tile. B effectively has 64 rows and 16 columns.
-    for (int t = 6; t < 7; ++t) {
-        tc.rows[t] = TILE_K / KPACK;
-        tc.colb[t] = TILE_N * KPACK * sizeof(type_t);
+    for (int t = 0; t < 8; t++){
+        tc.rows[t] = 16;
+        tc.colb[t] = 64;
     }
 
     // Must be done online, right before convolution
@@ -440,6 +429,7 @@ Return Value:
                         printf("AMX Initialized.\n");
                         configure_tiles();
                         this->GemmU8U8Dispatch = &MlasGemmU8U8DispatchAmx;
+                        this->GemmU8S8Dispatch = &MlasGemmU8S8DispatchAmx;
                     }
                 }
 

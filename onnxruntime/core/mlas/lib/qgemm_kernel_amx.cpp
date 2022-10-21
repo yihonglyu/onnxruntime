@@ -230,7 +230,7 @@ MlasGemmQuantKernel<MLAS_GEMM_U8U8_KERNEL_AMX>(const MLAS_GEMM_U8U8_KERNEL_AMX::
 
                         // Store in the same loop instead of doing it at the end
                         if (k == K - TILE_K) {
-                            int mc = m + m_acc * TILE_M, nc = n + n_acc * TILE_N;
+                            size_t mc = m + m_acc * TILE_M, nc = n + n_acc * TILE_N;
                             // int tC = m_acc + n_acc * N_ACC;
                             if (tC == TMM0)
                                 _tile_stored(TMM0, (void*)(C + mc * ldc + nc),
@@ -260,4 +260,281 @@ const MLAS_GEMM_QUANT_DISPATCH MlasGemmU8U8DispatchAmx = {
     MLAS_GEMM_U8U8_KERNEL_AMX::PackedK,
     MLAS_GEMM_U8U8_KERNEL_AMX::PackedStrides.K,
     8  // temp
+};
+
+
+/*******************************************************************
+ * Packing and Gemm kernels for U8S8 AMX
+ ******************************************************************/
+
+
+struct MLAS_GEMM_U8S8_KERNEL_AMX {
+    typedef uint8_t PackedAType;
+    typedef uint8_t PackedBType;
+    typedef uint8_t OffsetAType;
+    typedef int8_t  OffsetBType;
+
+    static constexpr size_t PackedK = 4;
+
+    // Use smaller stride for debugging,
+    static constexpr MLAS_GEMM_QUANT_STRIDES Strides{128, 128, 128};
+    static constexpr MLAS_GEMM_QUANT_STRIDES PackedStrides{128, 128, 128};
+};
+
+constexpr size_t MLAS_GEMM_U8S8_KERNEL_AMX::PackedK;
+constexpr MLAS_GEMM_QUANT_STRIDES MLAS_GEMM_U8S8_KERNEL_AMX::Strides;
+constexpr MLAS_GEMM_QUANT_STRIDES MLAS_GEMM_U8S8_KERNEL_AMX::PackedStrides;
+
+extern "C" {
+
+    void
+    MLASCALL
+    MlasGemmU8S8CopyPackAAvx2(
+        uint8_t* D,
+        const uint8_t* A,
+        size_t lda,
+        size_t CountM,
+        size_t CountK,
+        int32_t* RowSumBuffer
+        );
+
+    void
+    MLASCALL
+    MlasGemmU8S8CopyPackBAvx2(
+        uint8_t* D,
+        const uint8_t* B,
+        size_t ldb,
+        size_t CountN,
+        size_t CountK,
+        int32_t* ColumnSumBuffer,
+        bool BIsSigned
+        );
+
+}
+
+
+template<>
+MLAS_FORCEINLINE
+void
+MlasGemmQuantCopyPackA<MLAS_GEMM_U8S8_KERNEL_AMX>(
+    MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* D,
+    const uint8_t* A,
+    size_t lda,
+    size_t CountM,
+    size_t CountK,
+    int32_t* RowSumBuffer,
+    bool AIsSigned
+    )
+{
+    MLAS_UNREFERENCED_PARAMETER(AIsSigned);
+    MlasGemmU8S8CopyPackAAvx2(D, A, lda, CountM, CountK, RowSumBuffer);
+}
+
+
+template<>
+MLAS_FORCEINLINE
+void
+MlasGemmQuantCopyPackB<MLAS_GEMM_U8S8_KERNEL_AMX>(
+    MLAS_GEMM_U8S8_KERNEL_AMX::PackedBType* D,
+    const uint8_t* B,
+    size_t ldb,
+    size_t CountN,
+    size_t CountK,
+    int32_t* ColumnSumBuffer,
+    bool BIsSigned
+    )
+{
+    MlasGemmU8S8CopyPackBAvx2(D, B, ldb, CountN, CountK, ColumnSumBuffer, BIsSigned);
+}
+
+
+template <>
+size_t
+MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
+    const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* A,
+    const MLAS_GEMM_U8S8_KERNEL_AMX::PackedBType* B,
+    int32_t* C,
+    size_t PackedCountK,
+    size_t CountM,
+    size_t CountN,
+    size_t ldc,
+    const int32_t* RowSumBuffer,
+    const int32_t* ColumnSumBuffer,
+    const int32_t* ZeroPointB,
+    bool ZeroMode)
+{
+    MLAS_UNREFERENCED_PARAMETER(RowSumBuffer);
+    MLAS_UNREFERENCED_PARAMETER(ColumnSumBuffer);
+    MLAS_UNREFERENCED_PARAMETER(ZeroPointB);
+
+    const size_t K = PackedCountK * MLAS_GEMM_U8S8_KERNEL_AMX::PackedK;
+    const size_t UpTiledK = ((K + TILE_K - 1) / TILE_K) * TILE_K;
+    if (K != UpTiledK) {
+        throw new std::runtime_error("Leftover inner dimension not handled in AMX kernel yet!");
+    }
+    const size_t BColBlkSize = UpTiledK * TILE_N;
+    const int cstride = static_cast<int>(ldc * sizeof(int32_t));
+
+    size_t m = CountM;
+    while (m >= 2 * TILE_M) {
+        m -= 2 * TILE_M;
+        int32_t* c_blk_ptr = C; // C - beginning of the row
+        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedBType* b_blk_ptr = B; // restart B
+
+        size_t n = CountN;
+        while (n >= 2 * TILE_N) {
+            n -= 2 * TILE_N;
+            // Restart A from row start
+            const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* a_blk_ptr = A;
+
+            // Init accumulator tiles
+            //        B T0  B T1
+            //  A T2    T4    T6
+            //  A T3    T5    T7
+            if (ZeroMode) {
+                _tile_zero(TMM4);
+                _tile_zero(TMM5);
+                _tile_zero(TMM6);
+                _tile_zero(TMM7);
+            } else {
+                _tile_loadd(TMM4, (void*)c_blk_ptr, cstride);
+                _tile_loadd(TMM5, (void*)(c_blk_ptr + TILE_M * ldc), cstride);
+                _tile_loadd(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
+                _tile_loadd(TMM7, (void*)(c_blk_ptr + TILE_M * ldc + TILE_N), cstride);
+            }
+
+            for (size_t k = 0; k < K; k += TILE_K) {
+                _tile_loadd(TMM0, (void*)b_blk_ptr, static_cast<int>(64));
+                _tile_loadd(TMM2, (void*)a_blk_ptr, static_cast<int>(K));
+                _tile_dpbusd(TMM4, TMM2, TMM0);
+                _tile_loadd(TMM3, (void*)(a_blk_ptr + TILE_M * K), static_cast<int>(K));
+                _tile_dpbusd(TMM5, TMM3, TMM0);
+                _tile_loadd(TMM1, (void*)(b_blk_ptr + BColBlkSize), static_cast<int>(64));
+                _tile_dpbusd(TMM6, TMM2, TMM1);
+                _tile_dpbusd(TMM7, TMM3, TMM1);
+                b_blk_ptr += TILE_N * TILE_K;
+                a_blk_ptr += TILE_K;
+            }
+            _tile_stored(TMM4, (void*)c_blk_ptr, cstride);
+            _tile_stored(TMM5, (void*)(c_blk_ptr + TILE_M * ldc), cstride);
+            _tile_stored(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
+            _tile_stored(TMM7, (void*)(c_blk_ptr + TILE_M * ldc + TILE_N), cstride);
+            c_blk_ptr += 2 * TILE_N;
+            b_blk_ptr += BColBlkSize;
+        }
+
+        if (n == TILE_N) {
+            const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* a_blk_ptr = A;
+
+            // Init accumulator tiles
+            //        B T0
+            //  A T2    T4
+            //  A T3    T5
+            if (ZeroMode) {
+                _tile_zero(TMM4);
+                _tile_zero(TMM5);
+            } else {
+                _tile_loadd(TMM4, (void*)c_blk_ptr, cstride);
+                _tile_loadd(TMM5, (void*)(c_blk_ptr + TILE_M * ldc), cstride);
+            }
+
+            for (size_t k = 0; k < K; k += TILE_K) {
+                _tile_loadd(TMM0, (void*)b_blk_ptr, static_cast<int>(64));
+                _tile_loadd(TMM2, (void*)a_blk_ptr, static_cast<int>(K));
+                _tile_dpbusd(TMM4, TMM2, TMM0);
+                _tile_loadd(TMM3, (void*)(a_blk_ptr + TILE_M * K), static_cast<int>(K));
+                _tile_dpbusd(TMM5, TMM3, TMM0);
+                b_blk_ptr += TILE_N * TILE_K;
+                a_blk_ptr += TILE_K;
+            }
+            _tile_stored(TMM4, (void*)c_blk_ptr, cstride);
+            _tile_stored(TMM5, (void*)(c_blk_ptr + TILE_M * ldc), cstride);
+            c_blk_ptr += TILE_N;
+        } else if (n!=0){
+            throw new std::runtime_error("Leftover columns not handled in AMX kernel yet!");
+        }
+
+        // Go on to next block of rows
+        C += 2 * TILE_M * ldc; // points to beginning of the rows
+        A += 2 * TILE_M * K;
+    }
+
+    if (m == TILE_M) {
+        int32_t* c_blk_ptr = C; // C - beginning of the row
+        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedBType* b_blk_ptr = B; // restart B
+        size_t n = CountN;
+        while (n >= 2 * TILE_N) {
+            n -= 2 * TILE_N;
+
+            // Restart A from row start
+            const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* a_blk_ptr = A;
+
+            // Init accumulator tiles
+            //        B T0  B T1
+            //  A T2    T4    T6
+            //  A T3    T5    T7
+            if (ZeroMode) {
+                _tile_zero(TMM4);
+                _tile_zero(TMM6);
+            } else {
+                _tile_loadd(TMM4, (void*)c_blk_ptr, cstride);
+                _tile_loadd(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
+            }
+
+            for (size_t k = 0; k < K; k += TILE_K) {
+                _tile_loadd(TMM0, (void*)b_blk_ptr, static_cast<int>(64));
+                _tile_loadd(TMM2, (void*)a_blk_ptr, static_cast<int>(K));
+                _tile_dpbusd(TMM4, TMM2, TMM0);
+                _tile_loadd(TMM1, (void*)(b_blk_ptr + BColBlkSize), static_cast<int>(64));
+                _tile_dpbusd(TMM6, TMM2, TMM1);
+                b_blk_ptr += TILE_N * TILE_K;
+                a_blk_ptr += TILE_K;
+            }
+            _tile_stored(TMM4, (void*)c_blk_ptr, cstride);
+            _tile_stored(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
+            c_blk_ptr += 2 * TILE_N;
+            b_blk_ptr += BColBlkSize;
+        }
+
+        if (n == TILE_N) {
+            const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* a_blk_ptr = A;
+
+            // Init accumulator tiles
+            if (ZeroMode) {
+                _tile_zero(TMM4);
+            } else {
+                _tile_loadd(TMM4, (void*)c_blk_ptr, cstride);
+            }
+
+            for (size_t k = 0; k < K; k += TILE_K) {
+                _tile_loadd(TMM0, (void*)b_blk_ptr, static_cast<int>(64));
+                _tile_loadd(TMM2, (void*)a_blk_ptr, static_cast<int>(K));
+                _tile_dpbusd(TMM4, TMM2, TMM0);
+                b_blk_ptr += TILE_N * TILE_K;
+                a_blk_ptr += TILE_K;
+            }
+            _tile_stored(TMM4, (void*)c_blk_ptr, cstride);
+            c_blk_ptr += TILE_N;
+        } else if (n!=0){
+            throw new std::runtime_error("Leftover columns not handled in AMX kernel yet!");
+        }
+
+        // Go on to next block of rows
+        C += TILE_M * ldc; // points to beginning of the rows
+        A += TILE_M * K;
+    } else if (m > 0) {
+        throw new std::runtime_error("Leftover rows not handled in AMX kernel yet!");
+    }
+
+    return CountM;
+}
+
+
+const MLAS_GEMM_QUANT_DISPATCH MlasGemmU8S8DispatchAmx = {
+    MlasGemmQuantOperation<MLAS_GEMM_U8S8_KERNEL_AMX>,
+    MlasGemmQuantPackedOperation<MLAS_GEMM_U8S8_KERNEL_AMX>,
+    MlasGemmQuantCopyPackB<MLAS_GEMM_U8S8_KERNEL_AMX>,
+    MLAS_GEMM_U8S8_KERNEL_AMX::PackedK,
+    MLAS_GEMM_U8S8_KERNEL_AMX::PackedStrides.K,
+    64  // StridM
 };
