@@ -17,14 +17,6 @@ Abstract:
 #include "mlasi.h"
 #include "qgemm.h"
 
-#define M_ACC 2              // Number of C accumulators spanning the M dimension
-#define N_ACC 2              // Number of C accumulators spanning the N dimension
-#define TILE_M 16            // Number of rows in an A or C tile
-#define TILE_N 16            // Number of columns in a B or C tile
-#define TILE_K 64            // Number of columns in an A tile or rows in a B tile
-typedef int8_t type_t;       // The type of the data being operated on
-typedef int32_t res_type_t;  // The data type of the result
-#define _tdp _tile_dpbuud    // Multiplication operator
 
 #define TMM0 0
 #define TMM1 1
@@ -37,237 +29,13 @@ typedef int32_t res_type_t;  // The data type of the result
 
 #define KPACK (4 / sizeof(type_t))  // Vertical K packing into Dword
 
-struct MLAS_GEMM_U8U8_KERNEL_AMX {
-    typedef uint8_t PackedAType;
-    typedef uint8_t PackedBType;
-    typedef uint8_t OffsetAType;
-    typedef uint8_t OffsetBType;
-
-    static constexpr size_t PackedK = KPACK;
-    static constexpr size_t dim = 256;
-    static constexpr MLAS_GEMM_QUANT_STRIDES Strides{dim, dim, dim};
-    static constexpr MLAS_GEMM_QUANT_STRIDES PackedStrides{dim, dim, dim};
-};
-
-constexpr size_t MLAS_GEMM_U8U8_KERNEL_AMX::PackedK;
-constexpr MLAS_GEMM_QUANT_STRIDES MLAS_GEMM_U8U8_KERNEL_AMX::Strides;
-constexpr MLAS_GEMM_QUANT_STRIDES MLAS_GEMM_U8U8_KERNEL_AMX::PackedStrides;
-
-#if 0
-template<>
-MLAS_FORCEINLINE constexpr
-int32_t
-MlasGemmQuantFixupZeroPointA<MLAS_GEMM_QUANT_KERNEL_DEFAULT>(
-    int32_t ZeroPointA,
-    bool AIsSigned
-    )
-{
-    if (AIsSigned) {
-        ZeroPointA = (uint8_t)(ZeroPointA ^ 0x80);
-    }
-
-    return ZeroPointA;
-}
-
-template<>
-MLAS_FORCEINLINE constexpr
-int32_t
-MlasGemmQuantFixupZeroPointB<MLAS_GEMM_QUANT_KERNEL_DEFAULT>(
-    int32_t ZeroPointB,
-    bool BIsSigned
-    )
-{
-    if (BIsSigned) {
-        ZeroPointB = MLAS_GEMM_QUANT_KERNEL_DEFAULT::OffsetBType(ZeroPointB ^ 0x80);
-    }
-
-    return ZeroPointB;
-}
-#endif
-
-template <>
-void
-MlasGemmQuantCopyPackA<MLAS_GEMM_U8U8_KERNEL_AMX>(MLAS_GEMM_U8U8_KERNEL_AMX::PackedAType* D,
-                                                  const uint8_t* A,
-                                                  size_t lda,
-                                                  size_t CountM,
-                                                  size_t CountK,
-                                                  int32_t* RowSumBuffer,
-                                                  bool AIsSigned)
-{
-    printf("Enter MlasGemmQuantCopyPackA<MLAS_GEMM_U8U8_KERNEL_AMX>\n");
-
-    MLAS_UNREFERENCED_PARAMETER(AIsSigned);
-
-    for (size_t m = 0; m < CountM; ++m) {
-        RowSumBuffer[m] = 0;
-        for (size_t k = 0; k < CountK; ++k) {
-            D[m * CountK + k] = A[m * lda + k];
-            RowSumBuffer[m] += A[m * lda + k];
-            // printf("%d ", B_mem[k/KPACK][n][k%KPACK]);
-        }
-    }
-}
-
-template <>
-void
-MlasGemmQuantCopyPackB<MLAS_GEMM_U8U8_KERNEL_AMX>(MLAS_GEMM_U8U8_KERNEL_AMX::PackedBType* D,
-                                                  const uint8_t* B,
-                                                  size_t ldb,
-                                                  size_t CountN,
-                                                  size_t CountK,
-                                                  int32_t* ColumnSumBuffer,
-                                                  bool BIsSigned)
-{
-    printf("Enter MlasGemmQuantCopyPackB<MLAS_GEMM_U8U8_KERNEL_AMX>\n");
-
-    MLAS_UNREFERENCED_PARAMETER(BIsSigned);
-
-    for (size_t n = 0; n < CountN; ++n) {
-        ColumnSumBuffer[n] = 0;
-        for (size_t k = 0; k < CountK; ++k) {
-            ColumnSumBuffer[n] += B[k * ldb + n];
-        }
-    }
-
-    for (size_t k = 0; k < CountK; ++k) {
-        for (size_t n = 0; n < CountN; ++n) {
-            *(D + (k / KPACK) * CountN * KPACK + n * KPACK + k % KPACK) = B[k * ldb + n];
-            // printf("%d ", B_mem[k/KPACK][n][k%KPACK]);
-        }
-    }
-}
-
-template <>
-size_t
-MlasGemmQuantKernel<MLAS_GEMM_U8U8_KERNEL_AMX>(const MLAS_GEMM_U8U8_KERNEL_AMX::PackedAType* A,
-                                               const MLAS_GEMM_U8U8_KERNEL_AMX::PackedBType* B,
-                                               int32_t* C,
-                                               size_t PackedCountK,
-                                               size_t CountM,
-                                               size_t CountN,
-                                               size_t ldc,
-                                               const int32_t* RowSumBuffer,
-                                               const int32_t* ColumnSumBuffer,
-                                               const int32_t* ZeroPointB,
-                                               bool ZeroMode)
-{
-    printf("Enter MlasGemmQuantKernel<MLAS_GEMM_U8U8_KERNEL_AMX>\n");
-    MLAS_UNREFERENCED_PARAMETER(RowSumBuffer);
-    MLAS_UNREFERENCED_PARAMETER(ColumnSumBuffer);
-    MLAS_UNREFERENCED_PARAMETER(ZeroPointB);
-    MLAS_UNREFERENCED_PARAMETER(ZeroMode);
-
-    // A_mem and B_mem are blocks within the original matrix, C_mem is the original matrix
-    size_t K = PackedCountK * KPACK;
-    // size_k M_ACC, N_ACC;
-    // M_ACC = N_ACC = 2;
-    // typedef int8_t type_t;      // The type of the data being operated on
-    // typedef int32_t res_type_t; // The data type of the result
-    //#define _tdp _tile_dpbssd   // Multiplication operator
-
-    for (size_t n = 0; n < CountN; n += N_ACC * TILE_N) {
-        for (size_t m = 0; m < CountM; m += M_ACC * TILE_M) {
-            /*for (int n_acc = 0; n_acc < N_ACC; ++n_acc)
-              for (int m_acc = 0; m_acc < M_ACC; ++m_acc)
-                _tile_zero(tC(m_acc,n_acc));*/
-            _tile_zero(TMM0);
-            _tile_zero(TMM1);
-            _tile_zero(TMM2);
-            _tile_zero(TMM3);
-
-            // const int tB = TMM6;
-            // const int tA = TMM4;
-
-            for (size_t k = 0; k < K; k += TILE_K) {
-                // Preloading A tiles
-                //_tile_loadd(TMM4, &A_mem[m + 0*TILE_M][k], K*sizeof(type_t));
-                //_tile_loadd(TMM5, &A_mem[m + 1*TILE_M][k], K*sizeof(type_t));
-
-                for (int n_acc = 0; n_acc < N_ACC; ++n_acc) {
-                    //_tile_loadd(TMM6, B_mem[k/KPACK][n + n_acc*TILE_N],
-                    // N*sizeof(type_t)*KPACK);
-                    _tile_loadd(
-                        TMM6,
-                        (void*)(B + (k / KPACK) * (CountN * KPACK) + (n + n_acc * TILE_N) * KPACK),
-                        static_cast<int>(CountN * sizeof(type_t) * KPACK));
-
-                    for (int m_acc = 0; m_acc < M_ACC; ++m_acc) {
-                        if (n_acc == 0 && m_acc == 0)
-                            //_tile_loadd(TMM4, &A_mem[m + m_acc*TILE_M][k], K*sizeof(type_t));
-                            _tile_loadd(TMM4, (void*)(A + (m + 0 * TILE_M) * K + k),
-                                        static_cast<int>(K * sizeof(type_t)));
-                        else if (n_acc == 0 && m_acc == 1)
-                            //_tile_loadd(TMM5, &A_mem[m + m_acc*TILE_M][k], K*sizeof(type_t));
-                            _tile_loadd(TMM5, (void*)(A + (m + 1 * TILE_M) * K + k),
-                                        static_cast<int>(K * sizeof(type_t)));
-
-                        int tC = m_acc + n_acc * N_ACC;
-                        if (tC == TMM0) {
-                            if (m_acc)
-                                _tdp(TMM0, TMM5, TMM6);
-                            else
-                                _tdp(TMM0, TMM4, TMM6);
-                        }
-                        else if (tC == TMM1) {
-                            if (m_acc)
-                                _tdp(TMM1, TMM5, TMM6);
-                            else
-                                _tdp(TMM1, TMM4, TMM6);
-                        }
-                        else if (tC == TMM2) {
-                            if (m_acc)
-                                _tdp(TMM2, TMM5, TMM6);
-                            else
-                                _tdp(TMM2, TMM4, TMM6);
-                        }
-                        else if (tC == TMM3) {
-                            if (m_acc)
-                                _tdp(TMM3, TMM5, TMM6);
-                            else
-                                _tdp(TMM3, TMM4, TMM6);
-                        }
-
-                        // Store in the same loop instead of doing it at the end
-                        if (k == K - TILE_K) {
-                            size_t mc = m + m_acc * TILE_M, nc = n + n_acc * TILE_N;
-                            // int tC = m_acc + n_acc * N_ACC;
-                            if (tC == TMM0)
-                                _tile_stored(TMM0, (void*)(C + mc * ldc + nc),
-                                             static_cast<int>(ldc * sizeof(res_type_t)));
-                            else if (tC == TMM1)
-                                _tile_stored(TMM1, (void*)(C + mc * ldc + nc),
-                                             static_cast<int>(ldc * sizeof(res_type_t)));
-                            else if (tC == TMM2)
-                                _tile_stored(TMM2, (void*)(C + mc * ldc + nc),
-                                             static_cast<int>(ldc * sizeof(res_type_t)));
-                            else if (tC == TMM3)
-                                _tile_stored(TMM3, (void*)(C + mc * ldc + nc),
-                                             static_cast<int>(ldc * sizeof(res_type_t)));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return CountM;
-}
-
-const MLAS_GEMM_QUANT_DISPATCH MlasGemmU8U8DispatchAmx = {
-    MlasGemmQuantOperation<MLAS_GEMM_U8U8_KERNEL_AMX>,
-    MlasGemmQuantPackedOperation<MLAS_GEMM_U8U8_KERNEL_AMX>,
-    MlasGemmQuantCopyPackB<MLAS_GEMM_U8U8_KERNEL_AMX>,
-    MLAS_GEMM_U8U8_KERNEL_AMX::PackedK,
-    MLAS_GEMM_U8U8_KERNEL_AMX::PackedStrides.K,
-    8  // temp
-};
-
+constexpr size_t TILE_M = 16;
+constexpr size_t TILE_N = 16;
+constexpr size_t TILE_K = 64;
 
 /*******************************************************************
  * Packing and Gemm kernels for U8S8 AMX
  ******************************************************************/
-
-
 struct MLAS_GEMM_U8S8_KERNEL_AMX {
     typedef uint8_t PackedAType;
     typedef uint8_t PackedBType;
@@ -314,6 +82,37 @@ extern "C" {
 
 
 template<>
+MLAS_FORCEINLINE constexpr
+int32_t
+MlasGemmQuantFixupZeroPointA<MLAS_GEMM_U8S8_KERNEL_AMX>(
+    int32_t ZeroPointA,
+    bool AIsSigned
+    )
+{
+    if (AIsSigned) {
+        ZeroPointA = (uint8_t)(ZeroPointA ^ 0x80);
+    }
+
+    return ZeroPointA;
+}
+
+template<>
+MLAS_FORCEINLINE constexpr
+int32_t
+MlasGemmQuantFixupZeroPointB<MLAS_GEMM_U8S8_KERNEL_AMX>(
+    int32_t ZeroPointB,
+    bool BIsSigned
+    )
+{
+    if (!BIsSigned) {
+        ZeroPointB = MLAS_GEMM_U8S8_KERNEL_AMX::OffsetBType(ZeroPointB ^ 0x80);
+    }
+
+    return ZeroPointB;
+}
+
+
+template<>
 MLAS_FORCEINLINE
 void
 MlasGemmQuantCopyPackA<MLAS_GEMM_U8S8_KERNEL_AMX>(
@@ -327,7 +126,182 @@ MlasGemmQuantCopyPackA<MLAS_GEMM_U8S8_KERNEL_AMX>(
     )
 {
     MLAS_UNREFERENCED_PARAMETER(AIsSigned);
-    MlasGemmU8S8CopyPackAAvx2(D, A, lda, CountM, CountK, RowSumBuffer);
+    //
+    // The packed buffer has the same data ordering as the source bytes,
+    // but CountK is aligned up to a multiple of 64 to fill AMX tiles.
+    // All extra bytes are zero-padded.
+    //
+    const size_t AlignedK = (CountK + TILE_K - 1) / TILE_K * TILE_K;
+    __m512i zmm8 = _mm512_ternarylogic_epi32(zmm8, zmm8, zmm8, 255);
+    zmm8 = _mm512_srli_epi16(zmm8, 15);         // 0x0001;
+    __m512i zmm9 = _mm512_slli_epi16(zmm8, 8);
+    zmm9 = _mm512_or_epi32(zmm8, zmm9);         // 0x0101
+    __m512i zmm10 = _mm512_setzero_epi32();
+
+    for (; CountM >= 4; CountM -= 4){
+        // Init row sum accumulators
+        __m512i zmm0 = _mm512_setzero_epi32();
+        __m512i zmm1 = _mm512_setzero_epi32();
+        __m512i zmm2 = _mm512_setzero_epi32();
+        __m512i zmm3 = _mm512_setzero_epi32();
+
+        const uint8_t* src_blk = A; // start of the row
+        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* dst_blk = D;
+        A += lda * 4;
+        D += AlignedK * 4;
+
+        size_t K = CountK;
+        for (; K >= TILE_K; K -= TILE_K, src_blk += TILE_K, dst_blk += TILE_K){
+            __m512i zmm4 = _mm512_loadu_si512((void*)src_blk);
+            __m512i zmm5 = _mm512_loadu_si512((void*)(src_blk + lda));
+            __m512i zmm6 = _mm512_loadu_si512((void*)(src_blk + lda * 2));
+            __m512i zmm7 = _mm512_loadu_si512((void*)(src_blk + lda * 3));
+            _mm512_store_epi64((void*)(dst_blk), zmm4);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK * 2), zmm6);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK * 3), zmm7);
+            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
+            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
+            zmm0 = _mm512_add_epi32(zmm0, zmm4);
+            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
+            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
+            zmm1 = _mm512_add_epi32(zmm1, zmm5);
+            zmm6 = _mm512_maddubs_epi16(zmm6, zmm9); // byte + byte -> short
+            zmm6 = _mm512_madd_epi16(zmm6, zmm8);    // short + short -> int32
+            zmm2 = _mm512_add_epi32(zmm2, zmm6);
+            zmm7 = _mm512_maddubs_epi16(zmm7, zmm9); // byte + byte -> short
+            zmm7 = _mm512_madd_epi16(zmm7, zmm8);    // short + short -> int32
+            zmm3 = _mm512_add_epi32(zmm3, zmm7);
+        }
+
+        if (K > 0){
+            // process remaining columns
+            uint64_t mask = 0xFFFFFFFFFFFFFFFF >> (TILE_K - K);
+            __m512i zmm4 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)src_blk);
+            __m512i zmm5 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda));
+            __m512i zmm6 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda * 2));
+            __m512i zmm7 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda * 3));
+            _mm512_store_epi64((void*)(dst_blk), zmm4);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK * 2), zmm6);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK * 3), zmm7);
+            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
+            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
+            zmm0 = _mm512_add_epi32(zmm0, zmm4);
+            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
+            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
+            zmm1 = _mm512_add_epi32(zmm1, zmm5);
+            zmm6 = _mm512_maddubs_epi16(zmm6, zmm9); // byte + byte -> short
+            zmm6 = _mm512_madd_epi16(zmm6, zmm8);    // short + short -> int32
+            zmm2 = _mm512_add_epi32(zmm2, zmm6);
+            zmm7 = _mm512_maddubs_epi16(zmm7, zmm9); // byte + byte -> short
+            zmm7 = _mm512_madd_epi16(zmm7, zmm8);    // short + short -> int32
+            zmm3 = _mm512_add_epi32(zmm3, zmm7);
+        }
+
+        // Reduce row sums
+        __m256i ymm0  = _mm512_castsi512_si256(zmm0);
+        __m256i high0 = _mm512_extracti64x4_epi64(zmm0,1);
+        ymm0 = _mm256_add_epi32(ymm0, high0);
+        __m256i ymm1  = _mm512_castsi512_si256(zmm1);
+        __m256i high1 = _mm512_extracti64x4_epi64(zmm1,1);
+        ymm1 = _mm256_add_epi32(ymm1, high1);
+        ymm0 = _mm256_hadd_epi32(ymm0, ymm1); // reduce and interleave Sum1/Sum0
+        __m256i ymm2  = _mm512_castsi512_si256(zmm2);
+        __m256i high2 = _mm512_extracti64x4_epi64(zmm2,1);
+        ymm2 = _mm256_add_epi32(ymm2, high2);
+        __m256i ymm3  = _mm512_castsi512_si256(zmm3);
+        __m256i high3 = _mm512_extracti64x4_epi64(zmm3,1);
+        ymm3 = _mm256_add_epi32(ymm3, high3);
+        ymm1 = _mm256_hadd_epi32(ymm2, ymm3); // reduce and interleave Sum3/Sum2
+        ymm0 = _mm256_hadd_epi32(ymm0, ymm1); // reduce and interleave Sum3/Sum2/Sum1/Sum0
+        __m128i xmm0 = _mm256_castsi256_si128(ymm0);
+        __m128i xmm1 = _mm256_extracti128_si256(ymm0, 1);
+        xmm0 =  _mm_add_epi32(xmm0, xmm1);   // reduce low/high dwords
+        _mm_store_epi32((void*)RowSumBuffer, xmm0);
+        RowSumBuffer += 4;
+    }
+
+    if (CountM >= 2){
+        CountM -= 2;
+        // Init row sum accumulators
+        __m512i zmm0 = _mm512_setzero_epi32();
+        __m512i zmm1 = _mm512_setzero_epi32();
+
+        const uint8_t* src_blk = A; // start of the row
+        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* dst_blk = D;
+        A += lda * 2;
+        D += AlignedK * 2;
+
+        size_t K = CountK;
+        for (; K >= TILE_K; K -= TILE_K, src_blk += TILE_K, dst_blk += TILE_K){
+            __m512i zmm4 = _mm512_loadu_si512((void*)src_blk);
+            __m512i zmm5 = _mm512_loadu_si512((void*)(src_blk + lda));
+            _mm512_store_epi64((void*)(dst_blk), zmm4);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
+            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
+            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
+            zmm0 = _mm512_add_epi32(zmm0, zmm4);
+            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
+            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
+            zmm1 = _mm512_add_epi32(zmm1, zmm5);
+        }
+
+        if (K > 0){
+            // process remaining columns
+            uint64_t mask = 0xFFFFFFFFFFFFFFFF >> (TILE_K - K);
+            __m512i zmm4 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)src_blk);
+            __m512i zmm5 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda));
+            _mm512_store_epi64((void*)(dst_blk), zmm4);
+            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
+            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
+            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
+            zmm0 = _mm512_add_epi32(zmm0, zmm4);
+            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
+            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
+            zmm1 = _mm512_add_epi32(zmm1, zmm5);
+        }
+
+        // Reduce row sums
+        int32_t sum0 = _mm512_reduce_add_epi32(zmm0);
+        int32_t sum1 = _mm512_reduce_add_epi32(zmm1);
+        RowSumBuffer[0] = sum0;
+        RowSumBuffer[1] = sum1;
+        RowSumBuffer+=2;
+    }
+
+    if (CountM > 0){
+        __m512i zmm0 = _mm512_setzero_epi32();
+
+        const uint8_t* src_blk = A; // start of the row
+        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* dst_blk = D;
+        A += lda;
+        D += AlignedK;
+
+        size_t K = CountK;
+        for (; K >= TILE_K; K -= TILE_K, src_blk += TILE_K, dst_blk += TILE_K){
+            __m512i zmm4 = _mm512_loadu_si512((void*)src_blk);
+            _mm512_store_epi64((void*)(dst_blk), zmm4);
+            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
+            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
+            zmm0 = _mm512_add_epi32(zmm0, zmm4);
+        }
+
+        if (K > 0){
+            // process remaining columns
+            uint64_t mask = 0xFFFFFFFFFFFFFFFF >> (TILE_K - K);
+            __m512i zmm4 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)src_blk);
+            _mm512_store_epi64((void*)(dst_blk), zmm4);
+            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
+            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
+            zmm0 = _mm512_add_epi32(zmm0, zmm4);
+        }
+
+        // Reduce row sums
+        int32_t sum = _mm512_reduce_add_epi32(zmm0);
+        *RowSumBuffer = sum;
+        RowSumBuffer++;
+    }
 }
 
 

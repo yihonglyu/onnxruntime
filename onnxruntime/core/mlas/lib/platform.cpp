@@ -428,7 +428,7 @@ Return Value:
                     if (MlasInitAMX()) {
                         printf("AMX Initialized.\n");
                         configure_tiles();
-                        this->GemmU8U8Dispatch = &MlasGemmU8U8DispatchAmx;
+                        this->GemmU8U8Dispatch = &MlasGemmU8S8DispatchAmx;
                         this->GemmU8S8Dispatch = &MlasGemmU8S8DispatchAmx;
                     }
                 }
