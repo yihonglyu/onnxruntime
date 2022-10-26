@@ -42,7 +42,7 @@ struct MLAS_GEMM_U8S8_KERNEL_AMX {
     typedef uint8_t OffsetAType;
     typedef int8_t  OffsetBType;
 
-    static constexpr size_t PackedK = 4;
+    static constexpr size_t PackedK = TILE_K;
 
     // Use smaller stride for debugging,
     static constexpr MLAS_GEMM_QUANT_STRIDES Strides{128, 128, 128};
@@ -57,18 +57,7 @@ extern "C" {
 
     void
     MLASCALL
-    MlasGemmU8S8CopyPackAAvx2(
-        uint8_t* D,
-        const uint8_t* A,
-        size_t lda,
-        size_t CountM,
-        size_t CountK,
-        int32_t* RowSumBuffer
-        );
-
-    void
-    MLASCALL
-    MlasGemmU8S8CopyPackBAvx2(
+    MlasGemmU8S8CopyPackBAmx(
         uint8_t* D,
         const uint8_t* B,
         size_t ldb,
@@ -152,14 +141,20 @@ MlasGemmQuantCopyPackA<MLAS_GEMM_U8S8_KERNEL_AMX>(
 
         size_t K = CountK;
         for (; K >= TILE_K; K -= TILE_K, src_blk += TILE_K, dst_blk += TILE_K){
+            // Load 4 rows
             __m512i zmm4 = _mm512_loadu_si512((void*)src_blk);
             __m512i zmm5 = _mm512_loadu_si512((void*)(src_blk + lda));
             __m512i zmm6 = _mm512_loadu_si512((void*)(src_blk + lda * 2));
             __m512i zmm7 = _mm512_loadu_si512((void*)(src_blk + lda * 3));
+
+            // Store 4 rows with the same layout
             _mm512_store_epi64((void*)(dst_blk), zmm4);
             _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
             _mm512_store_epi64((void*)(dst_blk + AlignedK * 2), zmm6);
             _mm512_store_epi64((void*)(dst_blk + AlignedK * 3), zmm7);
+
+            // Row sums -> 32b accumulators
+            // TODO maybe use 16b accumulator, save to 32b every 256 bytes?
             zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
             zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
             zmm0 = _mm512_add_epi32(zmm0, zmm4);
@@ -318,7 +313,7 @@ MlasGemmQuantCopyPackB<MLAS_GEMM_U8S8_KERNEL_AMX>(
     bool BIsSigned
     )
 {
-    MlasGemmU8S8CopyPackBAvx2(D, B, ldb, CountN, CountK, ColumnSumBuffer, BIsSigned);
+    MlasGemmU8S8CopyPackBAmx(D, B, ldb, CountN, CountK, ColumnSumBuffer, BIsSigned);
 }
 
 
@@ -342,11 +337,6 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
     MLAS_UNREFERENCED_PARAMETER(ZeroPointB);
 
     const size_t K = PackedCountK * MLAS_GEMM_U8S8_KERNEL_AMX::PackedK;
-    const size_t UpTiledK = ((K + TILE_K - 1) / TILE_K) * TILE_K;
-    if (K != UpTiledK) {
-        throw new std::runtime_error("Leftover inner dimension not handled in AMX kernel yet!");
-    }
-    const size_t BColBlkSize = UpTiledK * TILE_N;
     const int cstride = static_cast<int>(ldc * sizeof(int32_t));
 
     size_t m = CountM;
@@ -383,7 +373,7 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
                 _tile_dpbusd(TMM4, TMM2, TMM0);
                 _tile_loadd(TMM3, (void*)(a_blk_ptr + TILE_M * K), static_cast<int>(K));
                 _tile_dpbusd(TMM5, TMM3, TMM0);
-                _tile_loadd(TMM1, (void*)(b_blk_ptr + BColBlkSize), static_cast<int>(64));
+                _tile_loadd(TMM1, (void*)(b_blk_ptr + TILE_N * K), static_cast<int>(64));
                 _tile_dpbusd(TMM6, TMM2, TMM1);
                 _tile_dpbusd(TMM7, TMM3, TMM1);
                 b_blk_ptr += TILE_N * TILE_K;
@@ -394,7 +384,7 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
             _tile_stored(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
             _tile_stored(TMM7, (void*)(c_blk_ptr + TILE_M * ldc + TILE_N), cstride);
             c_blk_ptr += 2 * TILE_N;
-            b_blk_ptr += BColBlkSize;
+            b_blk_ptr += K * TILE_N;
         }
 
         if (n == TILE_N) {
@@ -459,7 +449,7 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
                 _tile_loadd(TMM0, (void*)b_blk_ptr, static_cast<int>(64));
                 _tile_loadd(TMM2, (void*)a_blk_ptr, static_cast<int>(K));
                 _tile_dpbusd(TMM4, TMM2, TMM0);
-                _tile_loadd(TMM1, (void*)(b_blk_ptr + BColBlkSize), static_cast<int>(64));
+                _tile_loadd(TMM1, (void*)(b_blk_ptr + K * TILE_N), static_cast<int>(64));
                 _tile_dpbusd(TMM6, TMM2, TMM1);
                 b_blk_ptr += TILE_N * TILE_K;
                 a_blk_ptr += TILE_K;
@@ -467,7 +457,7 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
             _tile_stored(TMM4, (void*)c_blk_ptr, cstride);
             _tile_stored(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
             c_blk_ptr += 2 * TILE_N;
-            b_blk_ptr += BColBlkSize;
+            b_blk_ptr += K * TILE_N;
         }
 
         if (n == TILE_N) {

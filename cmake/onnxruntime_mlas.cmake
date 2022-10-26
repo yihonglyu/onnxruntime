@@ -441,6 +441,7 @@ else()
         set_source_files_properties(${mlas_platform_srcs_avx} PROPERTIES COMPILE_FLAGS "-mavx")
 
         set(mlas_platform_srcs_avx2
+          ${MLAS_SRC_DIR}/x86_64/QgemmU8S8KernelAmx.S
           ${MLAS_SRC_DIR}/x86_64/QgemmU8S8KernelAvx2.S
           ${MLAS_SRC_DIR}/x86_64/QgemvU8S8KernelAvx2.S
           ${MLAS_SRC_DIR}/x86_64/QgemmU8U8KernelAvx2.S
