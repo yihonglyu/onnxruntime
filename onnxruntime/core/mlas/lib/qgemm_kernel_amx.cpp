@@ -658,36 +658,60 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
             // Init accumulator tiles
             //        B T0  B T1
             //  A T2    T4    T6
+            //  A T3    T5    T7
+            __m512i zeropoint;
             __m512i colsum = _mm512_loadu_epi32(col_sum_ptr);
-            if (ZeroPointB == nullptr){
-                InitTileWithRowColSums(Tile4, MaskN, RowSumBuffer, colsum, ZeroMode, c_blk_ptr, ldc);
-                _tile_loadd(TMM4, (void*)Tile4, 16 * sizeof(int32_t));
-                colsum = _mm512_loadu_epi32(col_sum_ptr + 16);
-                InitTileWithRowColSums(Tile6, MaskN, RowSumBuffer, colsum, ZeroMode, c_blk_ptr + 16, ldc);
-                _tile_loadd(TMM6, (void*)Tile6, 16 * sizeof(int32_t));
-            } else {
-                __m512i zeropoint = _mm512_loadu_epi32(zp_ptr);
-                InitTileWithRowColSumsZeroPoints(Tile4, MaskN, RowSumBuffer, colsum, zeropoint, ZeroMode, c_blk_ptr, ldc);
-                _tile_loadd(TMM4, (void*)Tile4, 16 * sizeof(int32_t));
-                colsum = _mm512_loadu_epi32(col_sum_ptr + 16);
+            if (ZeroPointB != nullptr){
+                zeropoint = _mm512_loadu_epi32(zp_ptr);
+            }
+            InitCornerTile(Tile4, m0, MaskN, RowSumBuffer, colsum, ZeroPointB!=nullptr, zeropoint, ZeroMode, c_blk_ptr, ldc);
+            _tile_loadd(TMM4, (void*)Tile4, 16 * sizeof(int32_t));
+            if (m1 != 0){
+                InitCornerTile(Tile5, m1, MaskN, RowSumBuffer+16, colsum, ZeroPointB!=nullptr, zeropoint, ZeroMode, c_blk_ptr + ldc * 16, ldc);
+                _tile_loadd(TMM5, (void*)Tile5, 16 * sizeof(int32_t));
+            }
+            colsum = _mm512_loadu_epi32(col_sum_ptr + 16);
+            if (ZeroPointB != nullptr) {
                 zeropoint = _mm512_loadu_epi32(zp_ptr + 16);
-                InitTileWithRowColSumsZeroPoints(Tile6, MaskN, RowSumBuffer, colsum, zeropoint, ZeroMode, c_blk_ptr + 16, ldc);
-                _tile_loadd(TMM6, (void*)Tile6, 16 * sizeof(int32_t));
                 zp_ptr += 2 * 16;
+            }
+            InitCornerTile(Tile6, m0, MaskN, RowSumBuffer, colsum, ZeroPointB!=nullptr, zeropoint, ZeroMode, c_blk_ptr + 16, ldc);
+            _tile_loadd(TMM6, (void*)Tile6, 16 * sizeof(int32_t));
+            if (m1 != 0){
+                InitCornerTile(Tile7, m1, MaskN, RowSumBuffer+16, colsum, ZeroPointB!=nullptr, zeropoint, ZeroMode, c_blk_ptr + ldc * 16 + 16, ldc);
+                _tile_loadd(TMM7, (void*)Tile7, 16 * sizeof(int32_t));
             }
             col_sum_ptr += 2 * 16;
 
             for (size_t k = 0; k < K; k += TILE_K) {
                 _tile_loadd(TMM0, (void*)b_blk_ptr, static_cast<int>(64));
                 _tile_loadd(TMM2, (void*)a_blk_ptr, static_cast<int>(K));
-                _tile_dpbusd(TMM4, TMM2, TMM0);
                 _tile_loadd(TMM1, (void*)(b_blk_ptr + K * TILE_N), static_cast<int>(64));
+                _tile_dpbusd(TMM4, TMM2, TMM0);
                 _tile_dpbusd(TMM6, TMM2, TMM1);
+                if (m1 > 0){
+                    _tile_loadd(TMM3, (void*)(a_blk_ptr + TILE_M * K), static_cast<int>(K));
+                    _tile_dpbusd(TMM5, TMM3, TMM0);
+                    _tile_dpbusd(TMM7, TMM3, TMM1);
+                }
                 b_blk_ptr += TILE_N * TILE_K;
                 a_blk_ptr += TILE_K;
             }
-            _tile_stored(TMM4, (void*)c_blk_ptr, cstride);
-            _tile_stored(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
+            if (m0 == TILE_M) {
+                _tile_stored(TMM4, (void*)c_blk_ptr, cstride);
+                _tile_stored(TMM6, (void*)(c_blk_ptr + TILE_N), cstride);
+            } else {
+                _tile_stored(TMM4, (void*)Tile4, 16 * sizeof(int32_t));
+                _tile_stored(TMM6, (void*)Tile6, 16 * sizeof(int32_t));
+                MoveTile(Tile4, m0, MaskN, c_blk_ptr, ldc);
+                MoveTile(Tile6, m0, MaskN, c_blk_ptr + TILE_N, ldc);
+            }
+            if (m1 != 0){
+                _tile_stored(TMM5, (void*)Tile5, 16 * sizeof(int32_t));
+                MoveTile(Tile5, m1, MaskN, c_blk_ptr + TILE_M * ldc, ldc);
+                _tile_stored(TMM7, (void*)Tile7, 16 * sizeof(int32_t));
+                MoveTile(Tile7, m1, MaskN, c_blk_ptr + TILE_M * ldc + TILE_N, ldc);
+            }
             c_blk_ptr += 2 * TILE_N;
             b_blk_ptr += K * TILE_N;
         }
