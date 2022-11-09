@@ -45,8 +45,8 @@ struct MLAS_GEMM_U8S8_KERNEL_AMX {
     static constexpr size_t PackedK = TILE_K;
 
     // Use smaller stride for debugging,
-    static constexpr MLAS_GEMM_QUANT_STRIDES Strides{128, 128, 128};
-    static constexpr MLAS_GEMM_QUANT_STRIDES PackedStrides{128, 128, 128};
+    static constexpr MLAS_GEMM_QUANT_STRIDES Strides{32, 512, 2048};
+    static constexpr MLAS_GEMM_QUANT_STRIDES PackedStrides{32, 512, 2048};
 };
 
 constexpr size_t MLAS_GEMM_U8S8_KERNEL_AMX::PackedK;
