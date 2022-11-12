@@ -57,6 +57,17 @@ extern "C" {
 
     void
     MLASCALL
+    MlasGemmU8S8CopyPackAAmx(
+        uint8_t* D,
+        const uint8_t* A,
+        size_t lda,
+        size_t CountM,
+        size_t CountK,
+        int32_t* RowSumBuffer
+        );
+
+    void
+    MLASCALL
     MlasGemmU8S8CopyPackBAmx(
         uint8_t* D,
         const uint8_t* B,
@@ -101,8 +112,6 @@ MlasGemmQuantFixupZeroPointB<MLAS_GEMM_U8S8_KERNEL_AMX>(
 }
 
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wuninitialized"
 template<>
 MLAS_FORCEINLINE
 void
@@ -117,191 +126,8 @@ MlasGemmQuantCopyPackA<MLAS_GEMM_U8S8_KERNEL_AMX>(
     )
 {
     MLAS_UNREFERENCED_PARAMETER(AIsSigned);
-    //
-    // The packed buffer has the same data ordering as the source bytes,
-    // but CountK is aligned up to a multiple of 64 to fill AMX tiles.
-    // All extra bytes are zero-padded.
-    //
-    const size_t AlignedK = (CountK + TILE_K - 1) / TILE_K * TILE_K;
-    __m512i zmm8;
-    zmm8 = _mm512_ternarylogic_epi32(zmm8, zmm8, zmm8, 255);
-    zmm8 = _mm512_srli_epi16(zmm8, 15);         // 0x0001;
-    __m512i zmm9 = _mm512_slli_epi16(zmm8, 8);
-    zmm9 = _mm512_or_epi32(zmm8, zmm9);         // 0x0101
-    __m512i zmm10 = _mm512_setzero_epi32();
-
-    for (; CountM >= 4; CountM -= 4){
-        // Init row sum accumulators
-        __m512i zmm0 = _mm512_setzero_epi32();
-        __m512i zmm1 = _mm512_setzero_epi32();
-        __m512i zmm2 = _mm512_setzero_epi32();
-        __m512i zmm3 = _mm512_setzero_epi32();
-
-        const uint8_t* src_blk = A; // start of the row
-        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* dst_blk = D;
-        A += lda * 4;
-        D += AlignedK * 4;
-
-        size_t K = CountK;
-        for (; K >= TILE_K; K -= TILE_K, src_blk += TILE_K, dst_blk += TILE_K){
-            // Load 4 rows
-            __m512i zmm4 = _mm512_loadu_si512((void*)src_blk);
-            __m512i zmm5 = _mm512_loadu_si512((void*)(src_blk + lda));
-            __m512i zmm6 = _mm512_loadu_si512((void*)(src_blk + lda * 2));
-            __m512i zmm7 = _mm512_loadu_si512((void*)(src_blk + lda * 3));
-
-            // Store 4 rows with the same layout
-            _mm512_store_epi64((void*)(dst_blk), zmm4);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK * 2), zmm6);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK * 3), zmm7);
-
-            // Row sums -> 32b accumulators
-            // TODO maybe use 16b accumulator, save to 32b every 256 bytes?
-            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
-            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
-            zmm0 = _mm512_add_epi32(zmm0, zmm4);
-            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
-            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
-            zmm1 = _mm512_add_epi32(zmm1, zmm5);
-            zmm6 = _mm512_maddubs_epi16(zmm6, zmm9); // byte + byte -> short
-            zmm6 = _mm512_madd_epi16(zmm6, zmm8);    // short + short -> int32
-            zmm2 = _mm512_add_epi32(zmm2, zmm6);
-            zmm7 = _mm512_maddubs_epi16(zmm7, zmm9); // byte + byte -> short
-            zmm7 = _mm512_madd_epi16(zmm7, zmm8);    // short + short -> int32
-            zmm3 = _mm512_add_epi32(zmm3, zmm7);
-        }
-
-        if (K > 0){
-            // process remaining columns
-            uint64_t mask = 0xFFFFFFFFFFFFFFFFULL >> (TILE_K - K);
-            __m512i zmm4 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)src_blk);
-            __m512i zmm5 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda));
-            __m512i zmm6 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda * 2));
-            __m512i zmm7 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda * 3));
-            _mm512_store_epi64((void*)(dst_blk), zmm4);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK * 2), zmm6);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK * 3), zmm7);
-            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
-            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
-            zmm0 = _mm512_add_epi32(zmm0, zmm4);
-            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
-            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
-            zmm1 = _mm512_add_epi32(zmm1, zmm5);
-            zmm6 = _mm512_maddubs_epi16(zmm6, zmm9); // byte + byte -> short
-            zmm6 = _mm512_madd_epi16(zmm6, zmm8);    // short + short -> int32
-            zmm2 = _mm512_add_epi32(zmm2, zmm6);
-            zmm7 = _mm512_maddubs_epi16(zmm7, zmm9); // byte + byte -> short
-            zmm7 = _mm512_madd_epi16(zmm7, zmm8);    // short + short -> int32
-            zmm3 = _mm512_add_epi32(zmm3, zmm7);
-        }
-
-        // Reduce row sums
-        __m256i ymm0  = _mm512_castsi512_si256(zmm0);
-        __m256i high0 = _mm512_extracti64x4_epi64(zmm0,1);
-        ymm0 = _mm256_add_epi32(ymm0, high0);
-        __m256i ymm1  = _mm512_castsi512_si256(zmm1);
-        __m256i high1 = _mm512_extracti64x4_epi64(zmm1,1);
-        ymm1 = _mm256_add_epi32(ymm1, high1);
-        ymm0 = _mm256_hadd_epi32(ymm0, ymm1); // reduce and interleave Sum1/Sum0
-        __m256i ymm2  = _mm512_castsi512_si256(zmm2);
-        __m256i high2 = _mm512_extracti64x4_epi64(zmm2,1);
-        ymm2 = _mm256_add_epi32(ymm2, high2);
-        __m256i ymm3  = _mm512_castsi512_si256(zmm3);
-        __m256i high3 = _mm512_extracti64x4_epi64(zmm3,1);
-        ymm3 = _mm256_add_epi32(ymm3, high3);
-        ymm1 = _mm256_hadd_epi32(ymm2, ymm3); // reduce and interleave Sum3/Sum2
-        ymm0 = _mm256_hadd_epi32(ymm0, ymm1); // reduce and interleave Sum3/Sum2/Sum1/Sum0
-        __m128i xmm0 = _mm256_castsi256_si128(ymm0);
-        __m128i xmm1 = _mm256_extracti128_si256(ymm0, 1);
-        xmm0 =  _mm_add_epi32(xmm0, xmm1);   // reduce low/high dwords
-        _mm_store_epi32((void*)RowSumBuffer, xmm0);
-        RowSumBuffer += 4;
-    }
-
-    if (CountM >= 2){
-        CountM -= 2;
-        // Init row sum accumulators
-        __m512i zmm0 = _mm512_setzero_epi32();
-        __m512i zmm1 = _mm512_setzero_epi32();
-
-        const uint8_t* src_blk = A; // start of the row
-        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* dst_blk = D;
-        A += lda * 2;
-        D += AlignedK * 2;
-
-        size_t K = CountK;
-        for (; K >= TILE_K; K -= TILE_K, src_blk += TILE_K, dst_blk += TILE_K){
-            __m512i zmm4 = _mm512_loadu_si512((void*)src_blk);
-            __m512i zmm5 = _mm512_loadu_si512((void*)(src_blk + lda));
-            _mm512_store_epi64((void*)(dst_blk), zmm4);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
-            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
-            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
-            zmm0 = _mm512_add_epi32(zmm0, zmm4);
-            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
-            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
-            zmm1 = _mm512_add_epi32(zmm1, zmm5);
-        }
-
-        if (K > 0){
-            // process remaining columns
-            uint64_t mask = 0xFFFFFFFFFFFFFFFFULL >> (TILE_K - K);
-            __m512i zmm4 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)src_blk);
-            __m512i zmm5 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)(src_blk + lda));
-            _mm512_store_epi64((void*)(dst_blk), zmm4);
-            _mm512_store_epi64((void*)(dst_blk + AlignedK), zmm5);
-            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
-            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
-            zmm0 = _mm512_add_epi32(zmm0, zmm4);
-            zmm5 = _mm512_maddubs_epi16(zmm5, zmm9); // byte + byte -> short
-            zmm5 = _mm512_madd_epi16(zmm5, zmm8);    // short + short -> int32
-            zmm1 = _mm512_add_epi32(zmm1, zmm5);
-        }
-
-        // Reduce row sums
-        int32_t sum0 = _mm512_reduce_add_epi32(zmm0);
-        int32_t sum1 = _mm512_reduce_add_epi32(zmm1);
-        RowSumBuffer[0] = sum0;
-        RowSumBuffer[1] = sum1;
-        RowSumBuffer+=2;
-    }
-
-    if (CountM > 0){
-        __m512i zmm0 = _mm512_setzero_epi32();
-
-        const uint8_t* src_blk = A; // start of the row
-        const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* dst_blk = D;
-        A += lda;
-        D += AlignedK;
-
-        size_t K = CountK;
-        for (; K >= TILE_K; K -= TILE_K, src_blk += TILE_K, dst_blk += TILE_K){
-            __m512i zmm4 = _mm512_loadu_si512((void*)src_blk);
-            _mm512_store_epi64((void*)(dst_blk), zmm4);
-            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
-            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
-            zmm0 = _mm512_add_epi32(zmm0, zmm4);
-        }
-
-        if (K > 0){
-            // process remaining columns
-            uint64_t mask = 0xFFFFFFFFFFFFFFFF >> (TILE_K - K);
-            __m512i zmm4 = _mm512_mask_loadu_epi8(zmm10, mask, (void*)src_blk);
-            _mm512_store_epi64((void*)(dst_blk), zmm4);
-            zmm4 = _mm512_maddubs_epi16(zmm4, zmm9); // byte + byte -> short
-            zmm4 = _mm512_madd_epi16(zmm4, zmm8);    // short + short -> int32
-            zmm0 = _mm512_add_epi32(zmm0, zmm4);
-        }
-
-        // Reduce row sums
-        int32_t sum = _mm512_reduce_add_epi32(zmm0);
-        *RowSumBuffer = sum;
-        RowSumBuffer++;
-    }
+    MlasGemmU8S8CopyPackAAmx(D, A, lda, CountM, CountK, RowSumBuffer);
 }
-#pragma GCC diagnostic pop
 
 
 template<>
