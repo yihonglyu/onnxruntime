@@ -66,13 +66,12 @@ class QgemmShortExecuteTest<AType, BType, int32_t, Packed, Threaded> : public Ml
   static size_t RegisterShortExecuteTests() {
     size_t test_registered = 0;
 
-    size_t dims[] = {16, 32, 48, 64, 80, 96, 112, 192, 400, 1024};
-    size_t kdims[] = {41, 59, 71, 384 + 20, 1003};
+    size_t dims[] = {32, 64, 128, 512};
+    size_t kdims[] = {64, 128, 1024};
     for (size_t m : dims){
       for (size_t n : dims){
         for (size_t k : kdims){
-          test_registered += RegisterSingleTest(m-3, n+5, k, 1, 14, 211);
-          test_registered += RegisterSingleTest(m+5, n-3, k, 1, 17);
+          test_registered += RegisterSingleTest(m, n, k, 1, 0, 0);
         }
       }
     }
