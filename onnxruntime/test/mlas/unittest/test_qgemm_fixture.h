@@ -67,7 +67,7 @@ class QgemmShortExecuteTest<AType, BType, int32_t, Packed, Threaded> : public Ml
     size_t test_registered = 0;
 
     size_t dims[] = {32, 64, 128, 512};
-    size_t kdims[] = {64, 128, 1024};
+    size_t kdims[] = {64, 128, 1024, 2048+64, 2048+128, 2048+256};
     for (size_t m : dims){
       for (size_t n : dims){
         for (size_t k : kdims){

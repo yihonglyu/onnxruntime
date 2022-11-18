@@ -592,14 +592,15 @@ Return Value:
         pop     rbp
         ret
 
-        .end
-
 
 //
 // Stack frame layout for the U8X8 kernel.
 //
 
-        .equ    .LGemmU8X8KernelFrame_CountM, -8
+        .equ    .LGemmU8X8KernelFrame_C, -40
+        .equ    .LGemmU8X8KernelFrame_B, -32
+        .equ    .LGemmU8X8KernelFrame_CountN, -24
+        .equ    .LGemmU8X8KernelFrame_CountM, -16
         .equ    .LGemmU8X8KernelFrame_padding, -8
         .equ    .LGemmU8X8KernelFrame_SavedR15, 0
         .equ    .LGemmU8X8KernelFrame_SavedR14, 8
@@ -614,7 +615,6 @@ Return Value:
         .equ    .LGemmU8X8KernelFrame_ZeroPointB, 80
         .equ    .LGemmU8X8KernelFrame_ZeroMode, 88
 
-        .text
 
 /*++
 Routine Description:
@@ -658,53 +658,108 @@ Return Value:
         push    r13
         push    r14
         push    r15
-
-        mov     QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp], r8	# Save CountM
+ //       mov     r11,.LGemmU8X8KernelFrame_RowSumBuffer[rsp]
+ //       mov     r12,.LGemmU8X8KernelFrame_ColumnSumBuffer[rsp]
+ //       mov     r13,.LGemmU8X8KernelFrame_ZeroPointB[rsp]
         mov     rax,.LGemmU8X8KernelFrame_ldc[rsp]
-        shl     rax,2                           # convert ldc to bytes
-        shl     rcx,6                           # convert PackedCountK to count K
         movzx   r10,BYTE PTR .LGemmU8X8KernelFrame_ZeroMode[rsp]
-        mov     r11,.LGemmU8X8KernelFrame_RowSumBuffer[rsp]
-        mov     r12,.LGemmU8X8KernelFrame_ColumnSumBuffer[rsp]
-        mov     r13,.LGemmU8X8KernelFrame_ZeroPointB[rsp]
-        lea     rbp,[rcx*8]
-        lea     r14,[rbp*2]
+        mov     QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp], r8	# Save CountM
+        mov     QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp], r9 # Save CountN
+        mov     QWORD PTR .LGemmU8X8KernelFrame_B[rsp], rsi     # Save B
+        mov     QWORD PTR .LGemmU8X8KernelFrame_C[rsp], rdx     # Save C
+        shl     rcx,6                           # PackedCountK -> CountK
+        shl     rax,2                           # convert ldc to bytes
+        sub     r8,32                           # m -= 2 * TILE_M
+        jb      .LGemmU8S8Kernel.ProcessRemainingRows
 
-        sub     r8,32                           # m -= 2 tile m
-        jb      .LGemmU8X8Kernel.ProcessRemainingRows
+.LGemmU8S8Kernel.LoopRowM32:
+        mov     rbx,QWORD PTR .LGemmU8X8KernelFrame_C[rsp]  # c_blk = C
+        shl     rax,5                           # 2 * TILE_M * ldc
+        add     QWORD PTR .LGemmU8X8KernelFrame_C[rsp],rax  # C += 2 * TILE_M * ldc
+        shr     rax,5                           # restore ldc
+        mov     rsi,QWORD PTR .LGemmU8X8KernelFrame_B[rsp]      # b_blk = B
+        mov     r9,QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp]  # n = CountN
+        sub     r9,32                           # n -= 2 * TILE_N
+        jb      .LGemmU8S8Kernel.ProcessRemainingColumnsM32
 
-.LGemmU8X8Kernel.ProcessNextRowM32:
+.LGemmU8S8Kernel.LoopColumnM32N32:
+        test    r10b, r10b                      # ZeroMode
+        je      .LGemmU8S8Kernel.InitAccTileWithC
 
-        mov     rbx,r9                          # n = CountN
-        sub     rbx,32
-        jb      .LGemmU8X8Kernel.ProcessRemainingColumnsM32
+        tilezero        tmm4
+        tilezero        tmm5
+        tilezero        tmm6
+        tilezero        tmm7
+        jmp	.LGemmU8S8Kernel.FinishedInitAccTile
 
-.LGemmU8X8Kernel.ProcessNextColumnLoopM32:
+.LGemmU8S8Kernel.InitAccTileWithC:
+        tileloadd       tmm4,[rbx+rax*1]        # c_blk, ldc
+        mov     r15,rax
+        shl     r15,4                           # ldc * TILE_M
+        add     r15,rbx                         # c16_blk = c_blk + ldc * TILE_M
+        tileloadd       tmm5,[r15+rax*1]        # c16_blk, ldc
+        tileloadd       tmm6,64[rbx+rax*1]      # c_blk + TILE_N, ldc
+        tileloadd       tmm7,64[r15+rax*1]      # c16_blk + TILE_N, ldc
 
-        sub     rbx,32                          # n -= 64
-        jae     .LGemmU8X8Kernel.ProcessNextColumnLoopM32
+ .LGemmU8S8Kernel.FinishedInitAccTile:
+        mov     r13,rdi                         # a_blk = A;
+        mov     r15,rcx                         # k = CountK
+        sub     r15,64                          # k -= TILE_K
 
-.LGemmU8X8Kernel.ProcessRemainingColumnsM32:
-        add     rbx,32                          # correct for over-subtract above
-        jz      .LGemmU8X8Kernel.ReduceRowSumBufferM32
+.LGemmU8S8Kernel.LoopBlockM32N32K64:
+        tileloadd       tmm2,[r13+rcx*1]        # a_blk, CountK
+        mov     r12,64                          # TILE_K
+        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
+        mov     r14,rcx                         # load CountK
+        shl     r14,4                           # CountK * 16
+        lea     r11,[rsi+r14]                   # b16_blk = b_blk + CountK * TILE_N
+        add     r14,r13                         # a16_blk = a_blk + CountK * TILE_M
+        tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
+        tdpbusd         tmm4,tmm2,tmm0
+        tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
+        tdpbusd         tmm5,tmm3,tmm0
+        tdpbusd         tmm6,tmm2,tmm1
+        tdpbusd         tmm7,tmm3,tmm1
+        add     r13,64                          # a_blk += TILE_K;
+        add     rsi,16*64                       # b_blk += TILE_N * TILE_K
+        sub     r15,64                          # k -= TILE_K
+        jae     .LGemmU8S8Kernel.LoopBlockM32N32K64
+
+        tilestored      [rbx+rax*1],tmm4        # c_blk, ldc
+        mov     r15,rax
+        shl     r15,4                           # ldc * TILE_M
+        add     r15,rbx                         # c16_blk = c_blk + ldc * TILE_M
+        tilestored      [r15+rax*1],tmm5        # c16_blk, ldc
+        tilestored      64[rbx+rax*1],tmm6      # c_blk + TILE_N, ldc
+        tilestored      64[r15+rax*1],tmm7      # c16_blk + TILE_N, ldc
+        add     rbx,4*2*16                      # c_blk += 2 * TILE_N
+        shl     rcx,4                           # CountK * 16
+        add     rsi,rcx                         # b_blk += CountK * TILE_N
+        shr     rcx,4                           # restore CountK
+        sub     r9,32                           # n -= 32
+        jae     .LGemmU8S8Kernel.LoopColumnM32N32
+
+.LGemmU8S8Kernel.ProcessRemainingColumnsM32:
+        add     r9,32                           # correct for over-subtract above
+        jz      .LGemmU8S8Kernel.ReduceRowSumBufferM32
+
+        // process remaining less than 32 columns
 
 
-.LGemmU8X8Kernel.ReduceRowSumBufferM32:
+.LGemmU8S8Kernel.ReduceRowSumBufferM32:
 
         // Go on to next block of rows
-        C += 2 * TILE_M * ldc;
-        A += 2 * TILE_M * PackedCountK;
-        RowSumBuffer += 2 * TILE_M;
+//        RowSumBuffer += 2 * TILE_M;
+        shl     rcx,5                           # 2 * TILE_M * CountK
+        add     rdi,rcx                         # A += 2 * TILE_M * CountK
+        shr     rcx,5                           # restore CountK
+        sub     r8,32                           # m -= 2 * TILE_M
+        jae     .LGemmU8S8Kernel.LoopRowM32
 
-        sub     r8,32                           # m -= 2 tile m
-        jae     .LGemmU8X8Kernel.ProcessNextRowM32
-
-.LGemmU8X8Kernel.ProcessRemainingRows:
+.LGemmU8S8Kernel.ProcessRemainingRows:
         add     r8,32                           # correct for over-subtract above
         jz      .LExitKernel
-
-
-
+        // process remaining rows code
 
 .LExitKernel:
         vzeroupper
@@ -720,116 +775,3 @@ Return Value:
 
 
         .end
-
-
-
-
-203              		.cfi_startproc
- 205 0000 4157     		push	r15	#
- 208 0002 4156     		push	r14	#
- 211 0004 4155     		push	r13	#
- 214 0006 4154     		push	r12	#
- 217 0008 55       		push	rbp	#
- 220 0009 53       		push	rbx	#
- 225 000a 440FB66C 		movzx	r13d, BYTE PTR 88[rsp]	# ZeroMode, ZeroMode
- 226 0010 48897424 		mov	QWORD PTR -24[rsp], rsi	# %sfp, tmp140
- 227 0015 4889CE   		mov	rsi, rcx	# PackedCountK, tmp142
- 235 0018 48C1E106 		sal	rcx, 6	# PackedCountK,
- 244 001c 48895424 		mov	QWORD PTR -56[rsp], rdx	# %sfp, tmp141
- 247 0021 488B5424 		mov	rdx, QWORD PTR 56[rsp]	# ldc, ldc
- 248 0026 4C894424 		mov	QWORD PTR -8[rsp], r8	# %sfp, CountM
- 249 002b 4C894C24 		mov	QWORD PTR -16[rsp], r9	# %sfp, tmp144
- 253 0030 4983F81F 		cmp	r8, 31	# CountM,
- 254 0034 0F864B01 		jbe	.L26	#,
- 255 003a 4889F8   		mov	rax, rdi	# A, tmp139
- 259 003d 4889D7   		mov	rdi, rdx	# _1, ldc
- 262 0040 4C89C3   		mov	rbx, r8	# CountM, tmp143
- 268 0043 41BF4000 		mov	r15d, 64	# tmp137,
- 274 0049 48C1E706 		sal	rdi, 6	# _1,
- 279 004d 4C8D3495 		lea	r14, 0[0+rdx*4]	# _3,
- 284 0055 48C1E207 		sal	rdx, 7	# ldc,
- 285 0059 4C8D0408 		lea	r8, [rax+rcx]	# ivtmp.78,
- 289 005d 48897C24 		mov	QWORD PTR -48[rsp], rdi	# %sfp, _1
- 294 0062 4889F7   		mov	rdi, rsi	# _7, PackedCountK
- 299 0065 48C1E60B 		sal	rsi, 11	# PackedCountK,
- 304 0069 48C1E70A 		sal	rdi, 10	# _7,
- 309 006d 48895424 		mov	QWORD PTR -40[rsp], rdx	# %sfp, ldc
- 312 0072 48897424 		mov	QWORD PTR -32[rsp], rsi	# %sfp, PackedCountK
- 313 0077 4C8D0C38 		lea	r9, [rax+rdi]	# tmp130,
- 316 007b 48895C24 		mov	QWORD PTR -64[rsp], rbx	# %sfp, CountM
- 317 0080 4901C9   		add	r9, rcx	# ivtmp.77, PackedCountK
- 321              	.L11:
- 324 0088 4C8B5424 		mov	r10, QWORD PTR -56[rsp]	# C, %sfp
- 325 008d 4C8B5C24 		mov	r11, QWORD PTR -48[rsp]	# c16_blk, %sfp
- 329 0092 488B4424 		mov	rax, QWORD PTR -16[rsp]	# CountN, %sfp
- 333 0097 488B5424 		mov	rdx, QWORD PTR -24[rsp]	# b_blk, %sfp
- 334 009c 4D01D3   		add	r11, r10	# c16_blk, C
- 341 009f 4889C3   		mov	rbx, rax	# n, CountN
- 342 00a2 4883F81F 		cmp	rax, 31	# CountN,
- 343 00a6 0F86AF00 		jbe	.L17	#,
- 347              	.L10:
- 350 00b0 4D8D6240 		lea	r12, 64[r10]	# _21,
- 351 00b4 498D6B40 		lea	rbp, 64[r11]	# _66,
- 352 00b8 4584ED   		test	r13b, r13b	# ZeroMode
- 353 00bb 0F84D700 		je	.L13	#,
- 357 00c1 C4E27B49 		tilezero	%tmm4
- 361 00c6 C4E27B49 		tilezero	%tmm5
- 365 00cb C4E27B49 		tilezero	%tmm6
- 369 00d0 C4E27B49 		tilezero	%tmm7
- 372              	.L14:
- 379 00d5 4885C9   		test	rcx, rcx	# PackedCountK
- 380 00d8 744F     		je	.L15	#,
- 383 00da 4889C8   		mov	rax, rcx	# k, PackedCountK
- 387              	.L16:
- 391 00e0 C4A27B4B 		tileloadd	%tmm0, [rdx+r15*1]	# b_blk, tmp137
- 395 00e6 4C89C6   		mov	rsi, r8	# tmp132, ivtmp.78
- 396 00e9 4829C6   		sub	rsi, rax	# tmp132, k
- 401 00ec C4E27B4B 		tileloadd	%tmm2, [rsi+rcx*1]	# tmp132, PackedCountK
- 405 00f2 4C89CE   		mov	rsi, r9	# tmp133, ivtmp.77
- 408 00f5 4829C6   		sub	rsi, rax	# tmp133, k
- 413 00f8 C4E27B4B 		tileloadd	%tmm3, [rsi+rcx*1]	# tmp133, PackedCountK
- 417 00fe 488D343A 		lea	rsi, [rdx+rdi]	# tmp134,
- 422 0102 C4A27B4B 		tileloadd	%tmm1, [rsi+r15*1]	# tmp134, tmp137
- 426 0108 C4E2795E 		tdpbusd	%tmm4, %tmm2, %tmm0
- 430 010d C4E2795E 		tdpbusd	%tmm5, %tmm3, %tmm0
- 434 0112 C4E2715E 		tdpbusd	%tmm6, %tmm2, %tmm1
- 438 0117 C4E2715E 		tdpbusd	%tmm7, %tmm3, %tmm1
- 444 011c 4881C200 		add	rdx, 1024	# b_blk,
- 450 0123 4883E840 		sub	rax, 64	# k,
- 453 0127 75B7     		jne	.L16	#,
- 455              	.L15:
- 461 0129 C4827A4B 		tilestored	[r10+r14*1], %tmm4	# c_blk, _3
- 465 012f C4827A4B 		tilestored	[r11+r14*1], %tmm5	# c16_blk, _3
- 469 0135 C4827A4B 		tilestored	[r12+r14*1], %tmm6	# _21, _3
- 473 013b C4A27A4B 		tilestored	[rbp+r14*1], %tmm7	# _66, _3
- 480 0142 4883EB20 		sub	rbx, 32	# n,
- 485 0146 4983EA80 		sub	r10, -128	# c_blk,
- 490 014a 4983EB80 		sub	r11, -128	# c16_blk,
- 495 014e 4801FA   		add	rdx, rdi	# b_blk, _7
- 501 0151 4883FB1F 		cmp	rbx, 31	# n,
- 502 0155 0F8755FF 		ja	.L10	#,
- 515 015b 488B5C24 		mov	rbx, QWORD PTR -40[rsp]	# _14, %sfp
- 521 0160 48836C24 		sub	QWORD PTR -64[rsp], 32	# %sfp,
- 526 0166 48015C24 		add	QWORD PTR -56[rsp], rbx	# %sfp, _14
- 532 016b 488B4424 		mov	rax, QWORD PTR -64[rsp]	# m, %sfp
- 535 0170 488B5C24 		mov	rbx, QWORD PTR -32[rsp]	# _15, %sfp
- 536 0175 4901D9   		add	r9, rbx	# ivtmp.77, _15
- 539 0178 4901D8   		add	r8, rbx	# ivtmp.78, _15
- 540 017b 4883F81F 		cmp	rax, 31	# m,
- 541 017f 0F8703FF 		ja	.L11	#,
- 543              	.L26:
- 548 0185 488B4424 		mov	rax, QWORD PTR -8[rsp]	#, %sfp
- 549 018a 5B       		pop	rbx	#
- 552 018b 5D       		pop	rbp	#
- 554 018c 415C     		pop	r12	#
- 556 018e 415D     		pop	r13	#
- 560 0190 415E     		pop	r14	#
- 562 0192 415F     		pop	r15	#
- 564 0194 C3       		ret
- 568              	.L13:
- 577 0198 C4827B4B 		tileloadd	%tmm4, [r10+r14*1]	# c_blk, _3
- 581 019e C4827B4B 		tileloadd	%tmm5, [r11+r14*1]	# c16_blk, _3
- 585 01a4 C4827B4B 		tileloadd	%tmm6, [r12+r14*1]	# _21, _3
- 589 01aa C4A27B4B 		tileloadd	%tmm7, [rbp+r14*1]	# _66, _3
-            1FFFFF 		jmp	.L14	#
- 597              		.cfi_endproc
