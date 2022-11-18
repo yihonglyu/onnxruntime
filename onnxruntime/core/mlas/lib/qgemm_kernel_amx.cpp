@@ -78,7 +78,6 @@ extern "C" {
         bool BIsSigned
         );
 
-
     size_t
     MLASCALL
     MlasGemmU8X8KernelAmx(
@@ -95,6 +94,21 @@ extern "C" {
         bool ZeroMode
         );
 
+    size_t
+    MLASCALL
+    MlasGemmU8S8KernelAvx512Vnni(
+        const uint8_t* A,
+        const uint8_t* B,
+        int32_t* C,
+        size_t PackedCountK,
+        size_t CountM,
+        size_t CountN,
+        size_t ldc,
+        const int32_t* RowSumVector,
+        const int32_t* ColumnSumVector,
+        const int32_t* ZeroPointB,
+        bool ZeroMode
+        );
 }
 
 
@@ -220,6 +234,7 @@ MoveTile(const int32_t* Tile, size_t cntM, uint16_t MaskN, int32_t* c_ptr, size_
 
 
 template <>
+MLAS_FORCEINLINE
 size_t
 MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
     const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* A,
@@ -234,10 +249,13 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
     const int32_t* ZeroPointB,
     bool ZeroMode)
 {
+    if (CountM < 32){
+        return MlasGemmU8S8KernelAvx512Vnni(A, B, C, PackedCountK, CountM, CountN, ldc,
+            RowSumBuffer, ColumnSumBuffer, ZeroPointB, ZeroMode);
+    }
     return MlasGemmU8X8KernelAmx(A, B, C, PackedCountK, CountM, CountN, ldc,
         RowSumBuffer, ColumnSumBuffer, ZeroPointB, ZeroMode);
-
-    /*
+/*
     MLAS_UNREFERENCED_PARAMETER(ZeroPointB);
     MLAS_UNREFERENCED_PARAMETER(RowSumBuffer);
     MLAS_UNREFERENCED_PARAMETER(ColumnSumBuffer);
@@ -273,25 +291,32 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
 
             // Restart A from row start
             const MLAS_GEMM_U8S8_KERNEL_AMX::PackedAType* a_blk = A;
-            for (size_t k = PackedCountK; k > 0; k -=TILE_K) {
                 _tile_loadd(TMM2, a_blk, PackedCountK);
                 _tile_loadd(TMM0, b_blk, TILE_K);
-                auto blk16 = PackedCountK*16;
-                _tile_loadd(TMM3, a_blk + blk16, PackedCountK);
-                _tile_dpbusd(TMM4, TMM2, TMM0);
-                _tile_loadd(TMM1, b_blk + blk16, TILE_K);
-                _tile_dpbusd(TMM5, TMM3, TMM0);
-                _tile_dpbusd(TMM6, TMM2, TMM1);
-                _tile_dpbusd(TMM7, TMM3, TMM1);
+                _tile_loadd(TMM3, a_blk + PackedCountK*16, PackedCountK);
+                _tile_loadd(TMM1, b_blk + PackedCountK*16, TILE_K);
+            for (size_t k = PackedCountK-TILE_K; k > 0; k -=TILE_K) {
                 b_blk += TILE_N * TILE_K;
                 a_blk += TILE_K;
+                _tile_dpbusd(TMM4, TMM2, TMM0);
+                _tile_dpbusd(TMM5, TMM3, TMM0);
+                _tile_loadd(TMM0, b_blk, TILE_K);
+                _tile_dpbusd(TMM6, TMM2, TMM1);
+                _tile_loadd(TMM2, a_blk, PackedCountK);
+                _tile_dpbusd(TMM7, TMM3, TMM1);
+                _tile_loadd(TMM3, a_blk + PackedCountK*16, PackedCountK);
+                _tile_loadd(TMM1, b_blk + PackedCountK*16, TILE_K);
             }
+                _tile_dpbusd(TMM4, TMM2, TMM0);
             _tile_stored(TMM4, c_blk, ldc * sizeof(int32_t));
+                _tile_dpbusd(TMM5, TMM3, TMM0);
             _tile_stored(TMM5, c_blk + ldc * TILE_M, ldc * sizeof(int32_t));
+                _tile_dpbusd(TMM6, TMM2, TMM1);
             _tile_stored(TMM6, c_blk + TILE_N, ldc * sizeof(int32_t));
+                _tile_dpbusd(TMM7, TMM3, TMM1);
             _tile_stored(TMM7, c_blk + ldc * TILE_M + TILE_N, ldc * sizeof(int32_t));
             c_blk += 2 * TILE_N;
-            b_blk += PackedCountK * TILE_N;
+            b_blk += PackedCountK * TILE_N + TILE_N * TILE_K;
         }
 
         // Go on to next block of rows
@@ -299,8 +324,7 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
         RowSumBuffer += 2 * TILE_M;
     }
 
-    return CountM;
-    */
+    return CountM;*/
 }
 
 

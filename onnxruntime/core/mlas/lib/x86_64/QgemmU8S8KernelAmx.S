@@ -663,24 +663,27 @@ Return Value:
  //       mov     r13,.LGemmU8X8KernelFrame_ZeroPointB[rsp]
         mov     rax,.LGemmU8X8KernelFrame_ldc[rsp]
         movzx   r10,BYTE PTR .LGemmU8X8KernelFrame_ZeroMode[rsp]
-        mov     QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp], r8	# Save CountM
-        mov     QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp], r9 # Save CountN
-        mov     QWORD PTR .LGemmU8X8KernelFrame_B[rsp], rsi     # Save B
-        mov     QWORD PTR .LGemmU8X8KernelFrame_C[rsp], rdx     # Save C
+        and     r8,NOT 31                                       # only process 32x rows
+        mov     QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp],r8  # Save CountM
+        mov     QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp],r9  # Save CountN
+        mov     QWORD PTR .LGemmU8X8KernelFrame_B[rsp],rsi      # Save B
+        mov     QWORD PTR .LGemmU8X8KernelFrame_C[rsp],rdx      # Save C
         shl     rcx,6                           # PackedCountK -> CountK
         shl     rax,2                           # convert ldc to bytes
-        sub     r8,32                           # m -= 2 * TILE_M
-        jb      .LGemmU8S8Kernel.ProcessRemainingRows
+        mov     r14,rcx
+        shl     r14,4                           # CountK * 16
 
 .LGemmU8S8Kernel.RowM32Loop:
-        mov     rbx,QWORD PTR .LGemmU8X8KernelFrame_C[rsp]  # c_blk = C
-        shl     rax,5                           # 2 * TILE_M * ldc
-        add     QWORD PTR .LGemmU8X8KernelFrame_C[rsp],rax  # C += 2 * TILE_M * ldc
-        shr     rax,5                           # restore ldc
-        mov     rsi,QWORD PTR .LGemmU8X8KernelFrame_B[rsp]      # b_blk = B
         mov     r9,QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp]  # n = CountN
+        mov     rbx,QWORD PTR .LGemmU8X8KernelFrame_C[rsp]  # c_blk = C
+        shl     rax,4                           # TILE_M * ldc
+        lea     r12,[rbx+rax*2]
+        mov     QWORD PTR .LGemmU8X8KernelFrame_C[rsp],r12  # C += 2 * TILE_M * ldc
+        mov     rsi,QWORD PTR .LGemmU8X8KernelFrame_B[rsp]      # b_blk = B
+        lea     r15,[rbx+rax]                   # c16_blk = c_blk + ldc * TILE_M
+        shr     rax,4                           # restore ldc
         sub     r9,32                           # n -= 2 * TILE_N
-        jb      .LGemmU8S8Kernel.ProcessRemainingColumnsM32
+//        jb      .LGemmU8S8Kernel.ProcessRemainingColumnsM32
 
 .LGemmU8S8Kernel.ColumnM32N32Loop:
         test    r10b, r10b                      # ZeroMode
@@ -690,93 +693,74 @@ Return Value:
         tilezero        tmm5
         tilezero        tmm6
         tilezero        tmm7
-        jmp	.LGemmU8S8Kernel.BlockM32N32K64Prefix
-
-.LGemmU8S8Kernel.InitAccTileWithC:
-        tileloadd       tmm4,[rbx+rax*1]        # c_blk, ldc
-        mov     r15,rax
-        shl     r15,4                           # ldc * TILE_M
-        add     r15,rbx                         # c16_blk = c_blk + ldc * TILE_M
-        tileloadd       tmm5,[r15+rax*1]        # c16_blk, ldc
-        tileloadd       tmm6,64[rbx+rax*1]      # c_blk + TILE_N, ldc
-        tileloadd       tmm7,64[r15+rax*1]      # c16_blk + TILE_N, ldc
 
  .LGemmU8S8Kernel.BlockM32N32K64Prefix:
-        tileloadd       tmm2,[rdi+rcx*1]        # a_blk, CountK
         mov             r13,rdi                 # a_blk = A;
         mov             r12,64                  # TILE_K
-        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
-        mov             r14,rcx                 # load CountK
-        shl             r14,4                   # CountK * 16
         lea             r11,[rsi+r14]           # b16_blk = b_blk + CountK * TILE_N
         add             r14,r13                 # a16_blk = a_blk + CountK * TILE_M
+        tileloadd       tmm2,[rdi+rcx*1]        # a_blk, CountK
+        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
         tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
+        tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
         mov             r15,rcx                 # k = CountK
         sub             r15,64                  # k -= TILE_K
-        tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
         jz      .LGemmU8S8Kernel.BlockM32N32K64Postfix
 
 .LGemmU8S8Kernel.BlockM32N32K64Loop:
         tdpbusd         tmm4,tmm2,tmm0
         add             rsi,16*64               # b_blk += TILE_N * TILE_K
         add             r13,64                  # a_blk += TILE_K;
-        tdpbusd         tmm5,tmm3,tmm0
-        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
         add             r11,16*64               # b16_blk += TILE_N * TILE_K
         add             r14,64                  # a16_blk += TILE_K;
+        tdpbusd         tmm5,tmm3,tmm0
+        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
         tdpbusd         tmm6,tmm2,tmm1
         tileloadd       tmm2,[r13+rcx*1]        # a_blk, CountK
         tdpbusd         tmm7,tmm3,tmm1
         tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
-        sub             r15,64                  # k -= TILE_K
         tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
+        sub             r15,64                  # k -= TILE_K
         ja      .LGemmU8S8Kernel.BlockM32N32K64Loop
 
 .LGemmU8S8Kernel.BlockM32N32K64Postfix:
         tdpbusd         tmm4,tmm2,tmm0
-        tdpbusd         tmm5,tmm3,tmm0
         mov             r15,rax
         shl             r15,4                   # ldc * TILE_M
         add             r15,rbx                 # c16_blk = c_blk + ldc * TILE_M
+        tdpbusd         tmm5,tmm3,tmm0
+        mov             r14,rcx
+        shl             r14,4                   # CountK * 16
+        lea             rsi,[rsi+r14+16*64]     # b_blk += CountK * TILE_N + TILE_N * TILE_K
         tdpbusd         tmm6,tmm2,tmm1
-        shl             rcx,4                   # CountK * 16
-        lea             rsi,[rsi+rcx+16*64]     # b_blk += CountK * TILE_N + TILE_N * TILE_K
-        shr             rcx,4                   # restore CountK
-        tilestored      [rbx+rax*1],tmm4        # c_blk, ldc
         tdpbusd         tmm7,tmm3,tmm1
+        tilestored      [rbx+rax*1],tmm4        # c_blk, ldc
         tilestored      [r15+rax*1],tmm5        # c16_blk, ldc
         tilestored      64[rbx+rax*1],tmm6      # c_blk + TILE_N, ldc
-        add             rbx,4*2*16              # c_blk += 2 * TILE_N
-        sub             r9,32                   # n -= 32
         tilestored      64[r15+rax*1],tmm7      # c16_blk + TILE_N, ldc
+        add             rbx,4*2*16              # c_blk += 2 * TILE_N
+        add             r15,4*2*16
+        sub             r9,32                   # n -= 32
         jae     .LGemmU8S8Kernel.ColumnM32N32Loop
 
-.LGemmU8S8Kernel.ProcessRemainingColumnsM32:
-        add     r9,32                           # correct for over-subtract above
-        jz      .LGemmU8S8Kernel.ReduceRowSumBufferM32
+//.LGemmU8S8Kernel.ProcessRemainingColumnsM32:
+//        add     r9,32                           # correct for over-subtract above
+//        jz      .LGemmU8S8Kernel.ReduceRowSumBufferM32
 
         // process remaining less than 32 columns
 
 
-.LGemmU8S8Kernel.ReduceRowSumBufferM32:
+//.LGemmU8S8Kernel.ReduceRowSumBufferM32:
 
         // Go on to next block of rows
 //        RowSumBuffer += 2 * TILE_M;
-        shl     rcx,5                           # 2 * TILE_M * CountK
-        add     rdi,rcx                         # A += 2 * TILE_M * CountK
-        shr     rcx,5                           # restore CountK
+        lea     rdi,[rdi+r14*2]                 # A += 2 * TILE_M * CountK
         sub     r8,32                           # m -= 2 * TILE_M
-        jae     .LGemmU8S8Kernel.RowM32Loop
-
-.LGemmU8S8Kernel.ProcessRemainingRows:
-        add     r8,32                           # correct for over-subtract above
-        jz      .LExitKernel
-        // process remaining rows code
+        ja      .LGemmU8S8Kernel.RowM32Loop
 
 .LExitKernel:
-        vzeroupper
-
         mov     rax, QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp]
+        vzeroupper
         pop     r15
         pop     r14
         pop     r13
@@ -785,5 +769,11 @@ Return Value:
         pop     rbp
         ret
 
+.LGemmU8S8Kernel.InitAccTileWithC:
+        tileloadd       tmm4,[rbx+rax*1]        # c_blk, ldc
+        tileloadd       tmm5,[r15+rax*1]        # c16_blk, ldc
+        tileloadd       tmm6,64[rbx+rax*1]      # c_blk + TILE_N, ldc
+        tileloadd       tmm7,64[r15+rax*1]      # c16_blk + TILE_N, ldc
+        jmp	.LGemmU8S8Kernel.BlockM32N32K64Prefix
 
         .end
