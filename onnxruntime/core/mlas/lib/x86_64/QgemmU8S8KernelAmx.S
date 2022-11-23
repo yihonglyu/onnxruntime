@@ -597,8 +597,10 @@ Return Value:
 // Stack frame layout for the U8X8 kernel.
 //
 
-        .equ    .LGemmU8X8KernelFrame_C, -40
-        .equ    .LGemmU8X8KernelFrame_B, -32
+        .equ    .LGemmU8X8KernelFrame_M, -56
+        .equ    .LGemmU8X8KernelFrame_C, -48
+        .equ    .LGemmU8X8KernelFrame_B, -40
+        .equ    .LGemmU8X8KernelFrame_A, -32
         .equ    .LGemmU8X8KernelFrame_CountN, -24
         .equ    .LGemmU8X8KernelFrame_CountM, -16
         .equ    .LGemmU8X8KernelFrame_padding, -8
@@ -663,9 +665,11 @@ Return Value:
  //       mov     r13,.LGemmU8X8KernelFrame_ZeroPointB[rsp]
         mov     rax,.LGemmU8X8KernelFrame_ldc[rsp]
         movzx   r10,BYTE PTR .LGemmU8X8KernelFrame_ZeroMode[rsp]
-        and     r8,NOT 31                                       # only process 32x rows
-        mov     QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp],r8  # Save CountM
+//        and     r8,NOT 31                                       # only process 32x rows
+//        mov     QWORD PTR .LGemmU8X8KernelFrame_M[rsp],r8       # M = CountM
+//        mov     QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp],r8  # Save CountM
         mov     QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp],r9  # Save CountN
+        mov     QWORD PTR .LGemmU8X8KernelFrame_A[rsp],rdi      # Save A
         mov     QWORD PTR .LGemmU8X8KernelFrame_B[rsp],rsi      # Save B
         mov     QWORD PTR .LGemmU8X8KernelFrame_C[rsp],rdx      # Save C
         shl     rcx,6                           # PackedCountK -> CountK
@@ -687,6 +691,7 @@ Return Value:
 
 .LGemmU8S8Kernel.ColumnM32N32Loop:
         test    r10b, r10b                      # ZeroMode
+        mov     r13,.LGemmU8X8KernelFrame_A[rsp]        # a_blk = A;
         je      .LGemmU8S8Kernel.InitAccTileWithC
 
         tilezero        tmm4
@@ -695,11 +700,10 @@ Return Value:
         tilezero        tmm7
 
  .LGemmU8S8Kernel.BlockM32N32K64Prefix:
-        mov             r13,rdi                 # a_blk = A;
         mov             r12,64                  # TILE_K
         lea             r11,[rsi+r14]           # b16_blk = b_blk + CountK * TILE_N
         add             r14,r13                 # a16_blk = a_blk + CountK * TILE_M
-        tileloadd       tmm2,[rdi+rcx*1]        # a_blk, CountK
+        tileloadd       tmm2,[r13+rcx*1]        # a_blk, CountK
         tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
         tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
         tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
@@ -754,12 +758,14 @@ Return Value:
 
         // Go on to next block of rows
 //        RowSumBuffer += 2 * TILE_M;
-        lea     rdi,[rdi+r14*2]                 # A += 2 * TILE_M * CountK
-        sub     r8,32                           # m -= 2 * TILE_M
-        ja      .LGemmU8S8Kernel.RowM32Loop
+//        mov     rbx,.LGemmU8X8KernelFrame_A[rsp]# A
+//        lea     rbx,[rbx+r14*2]                 # A += 2 * TILE_M * CountK
+//        sub     QWORD PTR .LGemmU8X8KernelFrame_M[rsp],32 # m -= 2 * TILE_M
+//        mov     .LGemmU8X8KernelFrame_A[rsp], rbx
+//        ja      .LGemmU8S8Kernel.RowM32Loop
 
 .LExitKernel:
-        mov     rax, QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp]
+        mov     rax,32 // QWORD PTR .LGemmU8X8KernelFrame_CountM[rsp]
         vzeroupper
         pop     r15
         pop     r14
