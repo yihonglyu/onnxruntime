@@ -249,7 +249,7 @@ MlasGemmQuantKernel<MLAS_GEMM_U8S8_KERNEL_AMX>(
     const int32_t* ZeroPointB,
     bool ZeroMode)
 {
-    if (CountM < 32){
+    if (CountM < 32 || CountN < 32){
         return MlasGemmU8S8KernelAvx512Vnni(A, B, C, PackedCountK, CountM, CountN, ldc,
             RowSumBuffer, ColumnSumBuffer, ZeroPointB, ZeroMode);
     }
