@@ -71,7 +71,7 @@ class QgemmShortExecuteTest<AType, BType, int32_t, Packed, Threaded> : public Ml
     for (size_t m : dims){
       for (size_t n : dims){
         for (size_t k : kdims){
-          test_registered += RegisterSingleTest(m, n, k, 1, 0, 0);
+          test_registered += RegisterSingleTest(m, n, k, 1, 5);
         }
       }
     }

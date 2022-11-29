@@ -678,10 +678,10 @@ Return Value:
 //        mov     QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp],r9  # Save CountN - 2 * TILE_N
         mov     QWORD PTR .LGemmU8X8KernelFrame_A[rsp],rdi      # Save A
         shl     rcx,6                           # PackedCountK -> CountK
-//        shl     rax,2                           # convert ldc to bytes
+        shl     rax,2                           # convert ldc to bytes
         mov     r14,rcx
         shl     r14,4                           # CountK * 16
-//        mov     rdi,.LGemmU8X8KernelFrame_RowSumBuffer[rsp]
+        mov     rdi,.LGemmU8X8KernelFrame_RowSumBuffer[rsp]
 
 .LGemmU8S8Kernel.RowM32Loop:
 //        mov     r12,QWORD PTR .LGemmU8X8KernelFrame_CountN[rsp]  # n = CountN - 2 * TILE_N
@@ -692,21 +692,415 @@ Return Value:
 //        lea     r12,[rdx+rax*2]
 //        mov     QWORD PTR .LGemmU8X8KernelFrame_C[rsp],r12  # C += 2 * TILE_M * ldc
 //        mov     rsi,QWORD PTR .LGemmU8X8KernelFrame_B[rsp]      # b_blk = B
-        shl     rax,6                           # shortcut single block M
-        lea     r15,[rdx+rax]                   # c16_blk = c_blk + ldc * TILE_M
-        shr     rax,4                           # restore ldc
 
 .LGemmU8S8Kernel.ColumnM32N32Loop:
-        test    r10b, r10b                      # ZeroMode
+        mov     rbx,.LGemmU8X8KernelFrame_ColumnSumBuffer[rsp]
+        mov     r8,.LGemmU8X8KernelFrame_ZeroPointB[rsp]
         mov     r13,.LGemmU8X8KernelFrame_A[rsp]        # a_blk = A;
-        je      .LGemmU8S8Kernel.InitAccTileWithC
+        vmovdqu32 zmm0,ZMMWORD PTR [rbx]        # colsum
+        vmovdqu32 zmm1,ZMMWORD PTR [rbx+64]     # colsum - right block
+        add     QWORD PTR .LGemmU8X8KernelFrame_ColumnSumBuffer[rsp],128
+        test    r8,r8                           # per column zero points?
+        jz      .LSkipScaleByZeroPointB_T46_1
 
-        tilezero        tmm4
-        tilezero        tmm5
-        tilezero        tmm6
-        tilezero        tmm7
+        or      r10,256                         # remember zeropoint in 2nd byte r10
+        vmovdqu32 zmm2,ZMMWORD PTR [r8]         # zeropoint
+        vmovdqu32 zmm3,ZMMWORD PTR [r8+64]      # zeropoint - right block
+        add     QWORD PTR .LGemmU8X8KernelFrame_ZeroPointB[rsp],128
+        // Init first halves of Tile 4 and 6
+        vpmulld zmm24,zmm2,DWORD PTR [rdi]{1to16}       # row = zeropoint * rowsum
+        vpaddd  zmm24,zmm0,zmm24                        # row += colsum
+        vpmulld zmm16,zmm3,DWORD PTR [rdi]{1to16}
+        vpaddd  zmm16,zmm1,zmm16
+        vpmulld zmm25,zmm2,DWORD PTR [rdi+4]{1to16}
+        vpaddd  zmm25,zmm0,zmm25
+        vpmulld zmm17,zmm3,DWORD PTR [rdi+4]{1to16}
+        vpaddd  zmm17,zmm1,zmm17
+        vpmulld zmm26,zmm2,DWORD PTR [rdi+8]{1to16}
+        vpaddd  zmm26,zmm0,zmm26
+        vpmulld zmm18,zmm3,DWORD PTR [rdi+8]{1to16}
+        vpaddd  zmm18,zmm1,zmm18
+        vpmulld zmm27,zmm2,DWORD PTR [rdi+12]{1to16}
+        vpaddd  zmm27,zmm0,zmm27
+        vpmulld zmm19,zmm3,DWORD PTR [rdi+12]{1to16}
+        vpaddd  zmm19,zmm1,zmm19
+        vpmulld zmm28,zmm2,DWORD PTR [rdi+16]{1to16}
+        vpaddd  zmm28,zmm0,zmm28
+        vpmulld zmm20,zmm3,DWORD PTR [rdi+16]{1to16}
+        vpaddd  zmm20,zmm1,zmm20
+        vpmulld zmm29,zmm2,DWORD PTR [rdi+20]{1to16}
+        vpaddd  zmm29,zmm0,zmm29
+        vpmulld zmm21,zmm3,DWORD PTR [rdi+20]{1to16}
+        vpaddd  zmm21,zmm1,zmm21
+        vpmulld zmm30,zmm2,DWORD PTR [rdi+24]{1to16}
+        vpaddd  zmm30,zmm0,zmm30
+        vpmulld zmm22,zmm3,DWORD PTR [rdi+24]{1to16}
+        vpaddd  zmm22,zmm1,zmm22
+        vpmulld zmm31,zmm2,DWORD PTR [rdi+28]{1to16}
+        vpaddd  zmm31,zmm0,zmm31
+        vpmulld zmm23,zmm3,DWORD PTR [rdi+28]{1to16}
+        vpaddd  zmm23,zmm1,zmm23
+        jmp     .LAccumulatorsInitialized_T46_1
 
- .LGemmU8S8Kernel.BlockM32N32K64Prefix:
+.LSkipScaleByZeroPointB_T46_1:
+        vpaddd  zmm24,zmm0,DWORD PTR [rdi]{1to16}       # row = colsum + rowsum
+        vpaddd  zmm16,zmm1,DWORD PTR [rdi]{1to16}
+        vpaddd  zmm25,zmm0,DWORD PTR [rdi+4]{1to16}
+        vpaddd  zmm17,zmm1,DWORD PTR [rdi+4]{1to16}
+        vpaddd  zmm26,zmm0,DWORD PTR [rdi+8]{1to16}
+        vpaddd  zmm18,zmm1,DWORD PTR [rdi+8]{1to16}
+        vpaddd  zmm27,zmm0,DWORD PTR [rdi+12]{1to16}
+        vpaddd  zmm19,zmm1,DWORD PTR [rdi+12]{1to16}
+        vpaddd  zmm28,zmm0,DWORD PTR [rdi+16]{1to16}
+        vpaddd  zmm20,zmm1,DWORD PTR [rdi+16]{1to16}
+        vpaddd  zmm29,zmm0,DWORD PTR [rdi+20]{1to16}
+        vpaddd  zmm21,zmm1,DWORD PTR [rdi+20]{1to16}
+        vpaddd  zmm30,zmm0,DWORD PTR [rdi+24]{1to16}
+        vpaddd  zmm22,zmm1,DWORD PTR [rdi+24]{1to16}
+        vpaddd  zmm31,zmm0,DWORD PTR [rdi+28]{1to16}
+        vpaddd  zmm23,zmm1,DWORD PTR [rdi+28]{1to16}
+
+.LAccumulatorsInitialized_T46_1:
+        test    r10b,r10b                       # ZeroMode?
+        jnz     .LSkipAccumulateOutput_T46_1
+        lea     r8,[rdx+rax]                    # c_blk + ldc
+        lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
+        vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
+        vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
+        vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
+        vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
+        vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
+        vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
+        vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
+        vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
+        vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
+
+.LSkipAccumulateOutput_T46_1:
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4[rsp],zmm24
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+64[rsp],zmm25
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+128[rsp],zmm26
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+192[rsp],zmm27
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+256[rsp],zmm28
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+320[rsp],zmm29
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+384[rsp],zmm30
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+448[rsp],zmm31
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6[rsp],zmm16
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+64[rsp],zmm17
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+128[rsp],zmm18
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+192[rsp],zmm19
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+256[rsp],zmm20
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+320[rsp],zmm21
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+384[rsp],zmm22
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+448[rsp],zmm23
+        // Init 2nd halves of Tile 4 and 6
+        cmp     r10,256                         # per column zero points?
+        jb      .LSkipScaleByZeroPointB_T46_2
+
+        vpmulld zmm24,zmm2,DWORD PTR [rdi+32]{1to16}    # row = zeropoint * rowsum
+        vpaddd  zmm24,zmm0,zmm24                        # row += colsum
+        vpmulld zmm16,zmm3,DWORD PTR [rdi+32]{1to16}
+        vpaddd  zmm16,zmm1,zmm16
+        vpmulld zmm25,zmm2,DWORD PTR [rdi+36]{1to16}
+        vpaddd  zmm25,zmm0,zmm25
+        vpmulld zmm17,zmm3,DWORD PTR [rdi+36]{1to16}
+        vpaddd  zmm17,zmm1,zmm17
+        vpmulld zmm26,zmm2,DWORD PTR [rdi+40]{1to16}
+        vpaddd  zmm26,zmm0,zmm26
+        vpmulld zmm18,zmm3,DWORD PTR [rdi+40]{1to16}
+        vpaddd  zmm18,zmm1,zmm18
+        vpmulld zmm27,zmm2,DWORD PTR [rdi+44]{1to16}
+        vpaddd  zmm27,zmm0,zmm27
+        vpmulld zmm19,zmm3,DWORD PTR [rdi+44]{1to16}
+        vpaddd  zmm19,zmm1,zmm19
+        vpmulld zmm28,zmm2,DWORD PTR [rdi+48]{1to16}
+        vpaddd  zmm28,zmm0,zmm28
+        vpmulld zmm20,zmm3,DWORD PTR [rdi+48]{1to16}
+        vpaddd  zmm20,zmm1,zmm20
+        vpmulld zmm29,zmm2,DWORD PTR [rdi+52]{1to16}
+        vpaddd  zmm29,zmm0,zmm29
+        vpmulld zmm21,zmm3,DWORD PTR [rdi+52]{1to16}
+        vpaddd  zmm21,zmm1,zmm21
+        vpmulld zmm30,zmm2,DWORD PTR [rdi+56]{1to16}
+        vpaddd  zmm30,zmm0,zmm30
+        vpmulld zmm22,zmm3,DWORD PTR [rdi+56]{1to16}
+        vpaddd  zmm22,zmm1,zmm22
+        vpmulld zmm31,zmm2,DWORD PTR [rdi+60]{1to16}
+        vpaddd  zmm31,zmm0,zmm31
+        vpmulld zmm23,zmm3,DWORD PTR [rdi+60]{1to16}
+        vpaddd  zmm23,zmm1,zmm23
+        jmp     .LAccumulatorsInitialized_T46_2
+
+.LSkipScaleByZeroPointB_T46_2:
+        vpaddd  zmm24,zmm0,DWORD PTR [rdi+32]{1to16}       # row = colsum + rowsum
+        vpaddd  zmm16,zmm1,DWORD PTR [rdi+32]{1to16}
+        vpaddd  zmm25,zmm0,DWORD PTR [rdi+36]{1to16}
+        vpaddd  zmm17,zmm1,DWORD PTR [rdi+36]{1to16}
+        vpaddd  zmm26,zmm0,DWORD PTR [rdi+40]{1to16}
+        vpaddd  zmm18,zmm1,DWORD PTR [rdi+40]{1to16}
+        vpaddd  zmm27,zmm0,DWORD PTR [rdi+44]{1to16}
+        vpaddd  zmm19,zmm1,DWORD PTR [rdi+44]{1to16}
+        vpaddd  zmm28,zmm0,DWORD PTR [rdi+48]{1to16}
+        vpaddd  zmm20,zmm1,DWORD PTR [rdi+48]{1to16}
+        vpaddd  zmm29,zmm0,DWORD PTR [rdi+52]{1to16}
+        vpaddd  zmm21,zmm1,DWORD PTR [rdi+52]{1to16}
+        vpaddd  zmm30,zmm0,DWORD PTR [rdi+56]{1to16}
+        vpaddd  zmm22,zmm1,DWORD PTR [rdi+56]{1to16}
+        vpaddd  zmm31,zmm0,DWORD PTR [rdi+60]{1to16}
+        vpaddd  zmm23,zmm1,DWORD PTR [rdi+60]{1to16}
+
+.LAccumulatorsInitialized_T46_2:
+        test    r10b,r10b                       # ZeroMode?
+        jnz     .LSkipAccumulateOutput_T46_2
+
+        lea     rdx,[rdx+rax*8]                 # advance c_blk by 8 row
+        lea     r8,[rdx+rax]                    # c_blk + ldc for next half tile
+        lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
+        vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
+        vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
+        vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
+        vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
+        vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
+        vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
+        vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
+        vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
+        vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
+
+.LSkipAccumulateOutput_T46_2:
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+512[rsp],zmm24
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+576[rsp],zmm25
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+640[rsp],zmm26
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+704[rsp],zmm27
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+768[rsp],zmm28
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+832[rsp],zmm29
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+896[rsp],zmm30
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+960[rsp],zmm31
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+512[rsp],zmm16
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+576[rsp],zmm17
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+640[rsp],zmm18
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+704[rsp],zmm19
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+768[rsp],zmm20
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+832[rsp],zmm21
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+896[rsp],zmm22
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+960[rsp],zmm23
+        mov     r12,64
+        tileloadd       tmm4,.LGemmU8X8KernelFrame_Tile4[rsp+r12*1]
+        tileloadd       tmm6,.LGemmU8X8KernelFrame_Tile6[rsp+r12*1]
+        ////////////////////////////////////////////////////////////////
+        // Init first halves of Tile 5 and 7
+        cmp     r10,256                         # per column zero points?
+        jb      .LSkipScaleByZeroPointB_T57_1
+
+        vpmulld zmm24,zmm2,DWORD PTR [rdi+64]{1to16}       # row = zeropoint * rowsum
+        vpaddd  zmm24,zmm0,zmm24                        # row += colsum
+        vpmulld zmm16,zmm3,DWORD PTR [rdi+64]{1to16}
+        vpaddd  zmm16,zmm1,zmm16
+        vpmulld zmm25,zmm2,DWORD PTR [rdi+68]{1to16}
+        vpaddd  zmm25,zmm0,zmm25
+        vpmulld zmm17,zmm3,DWORD PTR [rdi+68]{1to16}
+        vpaddd  zmm17,zmm1,zmm17
+        vpmulld zmm26,zmm2,DWORD PTR [rdi+72]{1to16}
+        vpaddd  zmm26,zmm0,zmm26
+        vpmulld zmm18,zmm3,DWORD PTR [rdi+72]{1to16}
+        vpaddd  zmm18,zmm1,zmm18
+        vpmulld zmm27,zmm2,DWORD PTR [rdi+76]{1to16}
+        vpaddd  zmm27,zmm0,zmm27
+        vpmulld zmm19,zmm3,DWORD PTR [rdi+76]{1to16}
+        vpaddd  zmm19,zmm1,zmm19
+        vpmulld zmm28,zmm2,DWORD PTR [rdi+80]{1to16}
+        vpaddd  zmm28,zmm0,zmm28
+        vpmulld zmm20,zmm3,DWORD PTR [rdi+80]{1to16}
+        vpaddd  zmm20,zmm1,zmm20
+        vpmulld zmm29,zmm2,DWORD PTR [rdi+84]{1to16}
+        vpaddd  zmm29,zmm0,zmm29
+        vpmulld zmm21,zmm3,DWORD PTR [rdi+84]{1to16}
+        vpaddd  zmm21,zmm1,zmm21
+        vpmulld zmm30,zmm2,DWORD PTR [rdi+88]{1to16}
+        vpaddd  zmm30,zmm0,zmm30
+        vpmulld zmm22,zmm3,DWORD PTR [rdi+88]{1to16}
+        vpaddd  zmm22,zmm1,zmm22
+        vpmulld zmm31,zmm2,DWORD PTR [rdi+92]{1to16}
+        vpaddd  zmm31,zmm0,zmm31
+        vpmulld zmm23,zmm3,DWORD PTR [rdi+92]{1to16}
+        vpaddd  zmm23,zmm1,zmm23
+        jmp     .LAccumulatorsInitialized_T57_1
+
+.LSkipScaleByZeroPointB_T57_1:
+        vpaddd  zmm24,zmm0,DWORD PTR [rdi+64]{1to16}       # row = colsum + rowsum
+        vpaddd  zmm16,zmm1,DWORD PTR [rdi+64]{1to16}
+        vpaddd  zmm25,zmm0,DWORD PTR [rdi+68]{1to16}
+        vpaddd  zmm17,zmm1,DWORD PTR [rdi+68]{1to16}
+        vpaddd  zmm26,zmm0,DWORD PTR [rdi+72]{1to16}
+        vpaddd  zmm18,zmm1,DWORD PTR [rdi+72]{1to16}
+        vpaddd  zmm27,zmm0,DWORD PTR [rdi+76]{1to16}
+        vpaddd  zmm19,zmm1,DWORD PTR [rdi+76]{1to16}
+        vpaddd  zmm28,zmm0,DWORD PTR [rdi+80]{1to16}
+        vpaddd  zmm20,zmm1,DWORD PTR [rdi+80]{1to16}
+        vpaddd  zmm29,zmm0,DWORD PTR [rdi+84]{1to16}
+        vpaddd  zmm21,zmm1,DWORD PTR [rdi+84]{1to16}
+        vpaddd  zmm30,zmm0,DWORD PTR [rdi+88]{1to16}
+        vpaddd  zmm22,zmm1,DWORD PTR [rdi+88]{1to16}
+        vpaddd  zmm31,zmm0,DWORD PTR [rdi+92]{1to16}
+        vpaddd  zmm23,zmm1,DWORD PTR [rdi+92]{1to16}
+
+.LAccumulatorsInitialized_T57_1:
+        test    r10b,r10b                       # ZeroMode?
+        jnz     .LSkipAccumulateOutput_T57_1
+
+        lea     rdx,[rdx+rax*8]                 # advance c_blk by 8 row
+        lea     r8,[rdx+rax]                    # c_blk + ldc
+        lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
+        vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
+        vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
+        vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
+        vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
+        vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
+        vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
+        vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
+        vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
+        vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
+
+.LSkipAccumulateOutput_T57_1:
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5[rsp],zmm24
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+64[rsp],zmm25
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+128[rsp],zmm26
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+192[rsp],zmm27
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+256[rsp],zmm28
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+320[rsp],zmm29
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+384[rsp],zmm30
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+448[rsp],zmm31
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7[rsp],zmm16
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+64[rsp],zmm17
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+128[rsp],zmm18
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+192[rsp],zmm19
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+256[rsp],zmm20
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+320[rsp],zmm21
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+384[rsp],zmm22
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+448[rsp],zmm23
+        // Init 2nd halves of Tile 5 and 7
+        cmp     r10,256                         # per column zero points?
+        jb      .LSkipScaleByZeroPointB_T57_2
+
+        vpmulld zmm24,zmm2,DWORD PTR [rdi+96]{1to16}    # row = zeropoint * rowsum
+        vpaddd  zmm24,zmm0,zmm24                        # row += colsum
+        vpmulld zmm16,zmm3,DWORD PTR [rdi+96]{1to16}
+        vpaddd  zmm16,zmm1,zmm16
+        vpmulld zmm25,zmm2,DWORD PTR [rdi+100]{1to16}
+        vpaddd  zmm25,zmm0,zmm25
+        vpmulld zmm17,zmm3,DWORD PTR [rdi+100]{1to16}
+        vpaddd  zmm17,zmm1,zmm17
+        vpmulld zmm26,zmm2,DWORD PTR [rdi+104]{1to16}
+        vpaddd  zmm26,zmm0,zmm26
+        vpmulld zmm18,zmm3,DWORD PTR [rdi+104]{1to16}
+        vpaddd  zmm18,zmm1,zmm18
+        vpmulld zmm27,zmm2,DWORD PTR [rdi+108]{1to16}
+        vpaddd  zmm27,zmm0,zmm27
+        vpmulld zmm19,zmm3,DWORD PTR [rdi+108]{1to16}
+        vpaddd  zmm19,zmm1,zmm19
+        vpmulld zmm28,zmm2,DWORD PTR [rdi+112]{1to16}
+        vpaddd  zmm28,zmm0,zmm28
+        vpmulld zmm20,zmm3,DWORD PTR [rdi+112]{1to16}
+        vpaddd  zmm20,zmm1,zmm20
+        vpmulld zmm29,zmm2,DWORD PTR [rdi+116]{1to16}
+        vpaddd  zmm29,zmm0,zmm29
+        vpmulld zmm21,zmm3,DWORD PTR [rdi+116]{1to16}
+        vpaddd  zmm21,zmm1,zmm21
+        vpmulld zmm30,zmm2,DWORD PTR [rdi+120]{1to16}
+        vpaddd  zmm30,zmm0,zmm30
+        vpmulld zmm22,zmm3,DWORD PTR [rdi+120]{1to16}
+        vpaddd  zmm22,zmm1,zmm22
+        vpmulld zmm31,zmm2,DWORD PTR [rdi+124]{1to16}
+        vpaddd  zmm31,zmm0,zmm31
+        vpmulld zmm23,zmm3,DWORD PTR [rdi+124]{1to16}
+        vpaddd  zmm23,zmm1,zmm23
+        jmp     .LAccumulatorsInitialized_T57_2
+
+.LSkipScaleByZeroPointB_T57_2:
+        vpaddd  zmm24,zmm0,DWORD PTR [rdi+96]{1to16}       # row = colsum + rowsum
+        vpaddd  zmm16,zmm1,DWORD PTR [rdi+96]{1to16}
+        vpaddd  zmm25,zmm0,DWORD PTR [rdi+100]{1to16}
+        vpaddd  zmm17,zmm1,DWORD PTR [rdi+100]{1to16}
+        vpaddd  zmm26,zmm0,DWORD PTR [rdi+104]{1to16}
+        vpaddd  zmm18,zmm1,DWORD PTR [rdi+104]{1to16}
+        vpaddd  zmm27,zmm0,DWORD PTR [rdi+108]{1to16}
+        vpaddd  zmm19,zmm1,DWORD PTR [rdi+108]{1to16}
+        vpaddd  zmm28,zmm0,DWORD PTR [rdi+112]{1to16}
+        vpaddd  zmm20,zmm1,DWORD PTR [rdi+112]{1to16}
+        vpaddd  zmm29,zmm0,DWORD PTR [rdi+116]{1to16}
+        vpaddd  zmm21,zmm1,DWORD PTR [rdi+116]{1to16}
+        vpaddd  zmm30,zmm0,DWORD PTR [rdi+120]{1to16}
+        vpaddd  zmm22,zmm1,DWORD PTR [rdi+120]{1to16}
+        vpaddd  zmm31,zmm0,DWORD PTR [rdi+124]{1to16}
+        vpaddd  zmm23,zmm1,DWORD PTR [rdi+124]{1to16}
+
+.LAccumulatorsInitialized_T57_2:
+        test    r10b,r10b                       # ZeroMode?
+        jnz     .LSkipAccumulateOutput_T57_2
+
+        lea     rdx,[rdx+rax*8]                 # advance c_blk by 8 row
+        lea     r8,[rdx+rax]                    # c_blk + ldc for next half tile
+        lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
+        vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
+        vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
+        vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
+        vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
+        vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
+        imul    r15,rax,24
+        vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
+        sub     rdx,r15                         # restore c_blk
+        vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
+        vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
+        vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
+
+.LSkipAccumulateOutput_T57_2:
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+512[rsp],zmm24
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+576[rsp],zmm25
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+640[rsp],zmm26
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+704[rsp],zmm27
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+768[rsp],zmm28
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+832[rsp],zmm29
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+896[rsp],zmm30
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+960[rsp],zmm31
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+512[rsp],zmm16
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+576[rsp],zmm17
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+640[rsp],zmm18
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+704[rsp],zmm19
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+768[rsp],zmm20
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+832[rsp],zmm21
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+896[rsp],zmm22
+        vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+960[rsp],zmm23
+        mov     r12,64
+        tileloadd       tmm5,.LGemmU8X8KernelFrame_Tile5[rsp+r12*1]
+        tileloadd       tmm7,.LGemmU8X8KernelFrame_Tile7[rsp+r12*1]
+
+.LGemmU8S8Kernel.BlockM32N32K64Prefix:
         mov             r12,64                  # TILE_K
         lea             r11,[rsi+r14]           # b16_blk = b_blk + CountK * TILE_N
         add             r14,r13                 # a16_blk = a_blk + CountK * TILE_M
@@ -736,12 +1130,10 @@ Return Value:
 
 .LGemmU8S8Kernel.BlockM32N32K64Postfix:
         tdpbusd         tmm4,tmm2,tmm0
-        mov             r15,rax
-        shl             r15,4                   # ldc * TILE_M
+        imul            r15,rax,16              # ldc * TILE_M
         add             r15,rdx                 # c16_blk = c_blk + ldc * TILE_M
         tdpbusd         tmm5,tmm3,tmm0
-        mov             r14,rcx
-        shl             r14,4                   # CountK * 16
+        imul            r14,rcx,16              # CountK * 16
         lea             rsi,[rsi+r14+16*64]     # b_blk += CountK * TILE_N + TILE_N * TILE_K
         tdpbusd         tmm6,tmm2,tmm1
         tdpbusd         tmm7,tmm3,tmm1
@@ -751,7 +1143,6 @@ Return Value:
 #        mov     r9,QWORD PTR .LGemmU8X8KernelFrame_N[rsp]
         tilestored      64[r15+rax*1],tmm7      # c16_blk + TILE_N, ldc
         add             rdx,4*2*16              # c_blk += 2 * TILE_N
-        add             r15,4*2*16
         sub             r9,32                   # n -= 32
 #        mov     QWORD PTR .LGemmU8X8KernelFrame_N[rsp],r9
         jae     .LGemmU8S8Kernel.ColumnM32N32Loop
@@ -774,12 +1165,5 @@ Return Value:
         pop     rbx
         pop     rbp
         ret
-
-.LGemmU8S8Kernel.InitAccTileWithC:
-        tileloadd       tmm4,[rdx+rax*1]        # c_blk, ldc
-        tileloadd       tmm5,[r15+rax*1]        # c16_blk, ldc
-        tileloadd       tmm6,64[rdx+rax*1]      # c_blk + TILE_N, ldc
-        tileloadd       tmm7,64[r15+rax*1]      # c16_blk + TILE_N, ldc
-        jmp	.LGemmU8S8Kernel.BlockM32N32K64Prefix
 
         .end

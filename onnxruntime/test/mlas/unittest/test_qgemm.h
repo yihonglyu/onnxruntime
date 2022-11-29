@@ -215,7 +215,7 @@ class MlasQgemmTest<AType, BType, int32_t, Packed, Threaded> : public MlasQgemmT
       for (size_t m = 0; m < M; m++) {
         for (size_t n = 0; n < N; n++, f++) {
           ASSERT_EQ(C[f], CReference[f]) << "@[" << batch << "x" << m << "x" << n << "], "
-                                         << "Batch=" << BatchSize << "M=" << M << ", N=" << N << ", K=" << K
+                                         << "Batch=" << BatchSize << ", M=" << M << ", N=" << N << ", K=" << K
                                          << ", offa=" << int(offa) << ", offb=" << int(offb);
         }
       }
