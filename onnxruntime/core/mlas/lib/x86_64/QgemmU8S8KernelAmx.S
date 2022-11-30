@@ -692,21 +692,22 @@ Return Value:
 //        lea     r12,[rdx+rax*2]
 //        mov     QWORD PTR .LGemmU8X8KernelFrame_C[rsp],r12  # C += 2 * TILE_M * ldc
 //        mov     rsi,QWORD PTR .LGemmU8X8KernelFrame_B[rsp]      # b_blk = B
-
-.LGemmU8S8Kernel.ColumnM32N32Loop:
         mov     rbx,.LGemmU8X8KernelFrame_ColumnSumBuffer[rsp]
         mov     r8,.LGemmU8X8KernelFrame_ZeroPointB[rsp]
         mov     r13,.LGemmU8X8KernelFrame_A[rsp]        # a_blk = A;
+
+.LGemmU8S8Kernel.ColumnM32N32Loop:
         vmovdqu32 zmm0,ZMMWORD PTR [rbx]        # colsum
         vmovdqu32 zmm1,ZMMWORD PTR [rbx+64]     # colsum - right block
         add     QWORD PTR .LGemmU8X8KernelFrame_ColumnSumBuffer[rsp],128
         test    r8,r8                           # per column zero points?
+        tileloadd       tmm2,[r13+rcx*1]        # a_blk, CountK
         jz      .LSkipScaleByZeroPointB_T46_1
 
-        or      r10,256                         # remember zeropoint in 2nd byte r10
         vmovdqu32 zmm2,ZMMWORD PTR [r8]         # zeropoint
         vmovdqu32 zmm3,ZMMWORD PTR [r8+64]      # zeropoint - right block
         add     QWORD PTR .LGemmU8X8KernelFrame_ZeroPointB[rsp],128
+        or      r10,256                         # remember zeropoint in 2nd byte r10
         // Init first halves of Tile 4 and 6
         vpmulld zmm24,zmm2,DWORD PTR [rdi]{1to16}       # row = zeropoint * rowsum
         vpaddd  zmm24,zmm0,zmm24                        # row += colsum
@@ -762,28 +763,33 @@ Return Value:
 
 .LAccumulatorsInitialized_T46_1:
         test    r10b,r10b                       # ZeroMode?
+        mov     r12,64
         jnz     .LSkipAccumulateOutput_T46_1
+
         lea     r8,[rdx+rax]                    # c_blk + ldc
-        lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
+        mov     r15,rdx
         vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
         vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
         vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
+        lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
         vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
-        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [r15+rax*4]
         vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
         vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
         vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
-        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
-        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
-        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[r15]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[r15+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[r15+rax*2]
         vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
-        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[r15+rax*4]
+        lea     r15,[r15+rax*8]                 # advance c_blk by 8 row
         vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
         vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
         vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
 
 .LSkipAccumulateOutput_T46_1:
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4[rsp],zmm24
+        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+64[rsp],zmm25
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+128[rsp],zmm26
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+192[rsp],zmm27
@@ -795,12 +801,14 @@ Return Value:
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+64[rsp],zmm17
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+128[rsp],zmm18
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+192[rsp],zmm19
+        lea             r11,[rsi+r14]           # b16_blk = b_blk + CountK * TILE_N
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+256[rsp],zmm20
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+320[rsp],zmm21
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+384[rsp],zmm22
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+448[rsp],zmm23
         // Init 2nd halves of Tile 4 and 6
         cmp     r10,256                         # per column zero points?
+        tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
         jb      .LSkipScaleByZeroPointB_T46_2
 
         vpmulld zmm24,zmm2,DWORD PTR [rdi+32]{1to16}    # row = zeropoint * rowsum
@@ -859,22 +867,22 @@ Return Value:
         test    r10b,r10b                       # ZeroMode?
         jnz     .LSkipAccumulateOutput_T46_2
 
-        lea     rdx,[rdx+rax*8]                 # advance c_blk by 8 row
-        lea     r8,[rdx+rax]                    # c_blk + ldc for next half tile
+        lea     r8,[r15+rax]                    # c_blk + ldc for next half tile
+        vpaddd  zmm24,zmm24,ZMMWORD PTR [r15]
+        vpaddd  zmm25,zmm25,ZMMWORD PTR [r15+rax]
+        vpaddd  zmm26,zmm26,ZMMWORD PTR [r15+rax*2]
         lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
-        vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
-        vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
-        vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
         vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
-        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [r15+rax*4]
         vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
         vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
         vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
-        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
-        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
-        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[r15]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[r15+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[r15+rax*2]
         vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
-        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[r15+rax*4]
+        lea     r15,[r15+rax*8]                 # advance c_blk by 8 row
         vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
         vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
         vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
@@ -888,6 +896,7 @@ Return Value:
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+832[rsp],zmm29
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+896[rsp],zmm30
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile4+960[rsp],zmm31
+        tileloadd       tmm4,.LGemmU8X8KernelFrame_Tile4[rsp+r12*1]
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+512[rsp],zmm16
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+576[rsp],zmm17
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+640[rsp],zmm18
@@ -896,12 +905,10 @@ Return Value:
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+832[rsp],zmm21
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+896[rsp],zmm22
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile6+960[rsp],zmm23
-        mov     r12,64
-        tileloadd       tmm4,.LGemmU8X8KernelFrame_Tile4[rsp+r12*1]
-        tileloadd       tmm6,.LGemmU8X8KernelFrame_Tile6[rsp+r12*1]
         ////////////////////////////////////////////////////////////////
         // Init first halves of Tile 5 and 7
         cmp     r10,256                         # per column zero points?
+        tileloadd       tmm6,.LGemmU8X8KernelFrame_Tile6[rsp+r12*1]
         jb      .LSkipScaleByZeroPointB_T57_1
 
         vpmulld zmm24,zmm2,DWORD PTR [rdi+64]{1to16}       # row = zeropoint * rowsum
@@ -960,29 +967,31 @@ Return Value:
         test    r10b,r10b                       # ZeroMode?
         jnz     .LSkipAccumulateOutput_T57_1
 
-        lea     rdx,[rdx+rax*8]                 # advance c_blk by 8 row
-        lea     r8,[rdx+rax]                    # c_blk + ldc
+        lea     r8,[r15+rax]                    # c_blk + ldc
+        vpaddd  zmm24,zmm24,ZMMWORD PTR [r15]
+        vpaddd  zmm25,zmm25,ZMMWORD PTR [r15+rax]
+        vpaddd  zmm26,zmm26,ZMMWORD PTR [r15+rax*2]
         lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
-        vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
-        vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
-        vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
         vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
-        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [r15+rax*4]
         vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
         vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
         vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
-        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
-        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
-        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[r15]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[r15+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[r15+rax*2]
         vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
-        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[r15+rax*4]
+        lea     r15,[r15+rax*8]                 # advance c_blk by 8 row
         vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
         vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
         vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
 
 .LSkipAccumulateOutput_T57_1:
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5[rsp],zmm24
+        add             r14,r13                 # a16_blk = a_blk + CountK * TILE_M
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+64[rsp],zmm25
+        tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+128[rsp],zmm26
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+192[rsp],zmm27
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+256[rsp],zmm28
@@ -993,12 +1002,12 @@ Return Value:
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+64[rsp],zmm17
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+128[rsp],zmm18
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+192[rsp],zmm19
+        cmp     r10,256                         # per column zero points?
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+256[rsp],zmm20
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+320[rsp],zmm21
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+384[rsp],zmm22
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+448[rsp],zmm23
         // Init 2nd halves of Tile 5 and 7
-        cmp     r10,256                         # per column zero points?
         jb      .LSkipScaleByZeroPointB_T57_2
 
         vpmulld zmm24,zmm2,DWORD PTR [rdi+96]{1to16}    # row = zeropoint * rowsum
@@ -1057,24 +1066,21 @@ Return Value:
         test    r10b,r10b                       # ZeroMode?
         jnz     .LSkipAccumulateOutput_T57_2
 
-        lea     rdx,[rdx+rax*8]                 # advance c_blk by 8 row
-        lea     r8,[rdx+rax]                    # c_blk + ldc for next half tile
+        lea     r8,[r15+rax]                    # c_blk + ldc for next half tile
+        vpaddd  zmm24,zmm24,ZMMWORD PTR [r15]
+        vpaddd  zmm25,zmm25,ZMMWORD PTR [r15+rax]
+        vpaddd  zmm26,zmm26,ZMMWORD PTR [r15+rax*2]
         lea     rbx,[r8+rax*4]                  # c_blk + 5 * ldc
-        vpaddd  zmm24,zmm24,ZMMWORD PTR [rdx]
-        vpaddd  zmm25,zmm25,ZMMWORD PTR [rdx+rax]
-        vpaddd  zmm26,zmm26,ZMMWORD PTR [rdx+rax*2]
         vpaddd  zmm27,zmm27,ZMMWORD PTR [r8+rax*2]
-        vpaddd  zmm28,zmm28,ZMMWORD PTR [rdx+rax*4]
+        vpaddd  zmm28,zmm28,ZMMWORD PTR [r15+rax*4]
         vpaddd  zmm29,zmm29,ZMMWORD PTR [r8+rax*4]
         vpaddd  zmm30,zmm30,ZMMWORD PTR [rbx+rax]
-        imul    r15,rax,24
         vpaddd  zmm31,zmm31,ZMMWORD PTR [rbx+rax*2]
-        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[rdx]
-        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[rdx+rax]
-        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[rdx+rax*2]
+        vpaddd  zmm16,zmm16,ZMMWORD PTR 64[r15]
+        vpaddd  zmm17,zmm17,ZMMWORD PTR 64[r15+rax]
+        vpaddd  zmm18,zmm18,ZMMWORD PTR 64[r15+rax*2]
         vpaddd  zmm19,zmm19,ZMMWORD PTR 64[r8+rax*2]
-        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[rdx+rax*4]
-        sub     rdx,r15                         # restore c_blk
+        vpaddd  zmm20,zmm20,ZMMWORD PTR 64[r15+rax*4]
         vpaddd  zmm21,zmm21,ZMMWORD PTR 64[r8+rax*4]
         vpaddd  zmm22,zmm22,ZMMWORD PTR 64[rbx+rax]
         vpaddd  zmm23,zmm23,ZMMWORD PTR 64[rbx+rax*2]
@@ -1088,62 +1094,55 @@ Return Value:
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+832[rsp],zmm29
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+896[rsp],zmm30
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile5+960[rsp],zmm31
+        tileloadd       tmm5,.LGemmU8X8KernelFrame_Tile5[rsp+r12*1]
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+512[rsp],zmm16
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+576[rsp],zmm17
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+640[rsp],zmm18
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+704[rsp],zmm19
+        mov             r15,rcx                 # k = CountK
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+768[rsp],zmm20
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+832[rsp],zmm21
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+896[rsp],zmm22
         vmovdqu32 ZMMWORD PTR .LGemmU8X8KernelFrame_Tile7+960[rsp],zmm23
-        mov     r12,64
-        tileloadd       tmm5,.LGemmU8X8KernelFrame_Tile5[rsp+r12*1]
-        tileloadd       tmm7,.LGemmU8X8KernelFrame_Tile7[rsp+r12*1]
-
-.LGemmU8S8Kernel.BlockM32N32K64Prefix:
-        mov             r12,64                  # TILE_K
-        lea             r11,[rsi+r14]           # b16_blk = b_blk + CountK * TILE_N
-        add             r14,r13                 # a16_blk = a_blk + CountK * TILE_M
-        tileloadd       tmm2,[r13+rcx*1]        # a_blk, CountK
-        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
-        tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
-        tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
-        mov             r15,rcx                 # k = CountK
         sub             r15,64                  # k -= TILE_K
+        tileloadd       tmm7,.LGemmU8X8KernelFrame_Tile7[rsp+r12*1]
         jz      .LGemmU8S8Kernel.BlockM32N32K64Postfix
 
 .LGemmU8S8Kernel.BlockM32N32K64Loop:
         tdpbusd         tmm4,tmm2,tmm0
-        add             rsi,16*64               # b_blk += TILE_N * TILE_K
         add             r13,64                  # a_blk += TILE_K;
+        add             rsi,16*64               # b_blk += TILE_N * TILE_K
         add             r11,16*64               # b16_blk += TILE_N * TILE_K
         add             r14,64                  # a16_blk += TILE_K;
-        tdpbusd         tmm5,tmm3,tmm0
-        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
         tdpbusd         tmm6,tmm2,tmm1
         tileloadd       tmm2,[r13+rcx*1]        # a_blk, CountK
+        tdpbusd         tmm5,tmm3,tmm0
+        tileloadd       tmm0,[rsi+r12*1]        # b_blk, TILE_K
         tdpbusd         tmm7,tmm3,tmm1
-        tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
         tileloadd       tmm1,[r11+r12*1]        # b16_blk, TILE_K
         sub             r15,64                  # k -= TILE_K
+        tileloadd       tmm3,[r14+rcx*1]        # a16_blk, CountK
         ja      .LGemmU8S8Kernel.BlockM32N32K64Loop
 
 .LGemmU8S8Kernel.BlockM32N32K64Postfix:
         tdpbusd         tmm4,tmm2,tmm0
+        imul            r14,rcx,16              # CountK * 16
         imul            r15,rax,16              # ldc * TILE_M
+        tdpbusd         tmm6,tmm2,tmm1
+        tilestored      [rdx+rax*1],tmm4        # c_blk, ldc
+        lea             rsi,[rsi+r14+16*64]     # b_blk += CountK * TILE_N + TILE_N * TILE_K
         add             r15,rdx                 # c16_blk = c_blk + ldc * TILE_M
         tdpbusd         tmm5,tmm3,tmm0
-        imul            r14,rcx,16              # CountK * 16
-        lea             rsi,[rsi+r14+16*64]     # b_blk += CountK * TILE_N + TILE_N * TILE_K
-        tdpbusd         tmm6,tmm2,tmm1
-        tdpbusd         tmm7,tmm3,tmm1
-        tilestored      [rdx+rax*1],tmm4        # c_blk, ldc
-        tilestored      [r15+rax*1],tmm5        # c16_blk, ldc
         tilestored      64[rdx+rax*1],tmm6      # c_blk + TILE_N, ldc
-#        mov     r9,QWORD PTR .LGemmU8X8KernelFrame_N[rsp]
-        tilestored      64[r15+rax*1],tmm7      # c16_blk + TILE_N, ldc
         add             rdx,4*2*16              # c_blk += 2 * TILE_N
+        tdpbusd         tmm7,tmm3,tmm1
+        tilestored      [r15+rax*1],tmm5        # c16_blk, ldc
+        mov     r13,.LGemmU8X8KernelFrame_A[rsp]        # a_blk = reload A for next iter
+        mov     rbx,.LGemmU8X8KernelFrame_ColumnSumBuffer[rsp]
+        mov     r8,.LGemmU8X8KernelFrame_ZeroPointB[rsp]
+#        mov     r9,QWORD PTR .LGemmU8X8KernelFrame_N[rsp]
         sub             r9,32                   # n -= 32
+        tilestored      64[r15+rax*1],tmm7      # c16_blk + TILE_N, ldc
 #        mov     QWORD PTR .LGemmU8X8KernelFrame_N[rsp],r9
         jae     .LGemmU8S8Kernel.ColumnM32N32Loop
 
