@@ -371,8 +371,6 @@ Return Value:
 //
 // Stack frame layout for the U8S8 CopyPackA routine.
 //
-        .equ    .LGemmU8S8CopyPackAFrame_PaddedMatrixAData, -72
-        .equ    .LGemmU8S8CopyPackAFrame_Padding, -8
         .equ    .LGemmU8S8CopyPackAFrame_SavedR13, 0
         .equ    .LGemmU8S8CopyPackAFrame_SavedR12, 8
         .equ    .LGemmU8S8CopyPackAFrame_SavedRbx, 16
