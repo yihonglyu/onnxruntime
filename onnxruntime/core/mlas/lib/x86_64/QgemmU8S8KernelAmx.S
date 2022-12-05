@@ -85,19 +85,19 @@ Return Value:
         shr     r12,2
         neg     r12
         and     r12,15
-        vpcmpeqw ymm7,ymm7,ymm7             # generate word vector [0xFFFF]
-        vpsrlw  ymm7,ymm7,15                # generate word vector [0x0001]
-        vpsllw  ymm8,ymm7,8                 # generate word vector [0x0100]
-        vpor    ymm8,ymm7,ymm8              # generate word vector [0x0101]
+        vpcmpeqw ymm0,ymm0,ymm0             # generate word vector [0xFFFF]
+        vpsrlw  ymm0,ymm0,15                # generate word vector [0x0001]
+        vpsllw  ymm1,ymm0,8                 # generate word vector [0x0100]
+        vpor    ymm1,ymm0,ymm1              # generate word vector [0x0101]
 
 //
 // Compute the bit flip vector to adjust input from U8 to S8.
 //
 
-        vpxor   xmm9,xmm9,xmm9              # generate word vector [0x0000]
+        vpxor   xmm2,xmm2,xmm2              # generate word vector [0x0000]
         cmp     BYTE PTR .LGemmU8S8CopyPackBFrame_BIsSigned[rsp],0
         jnz     .LCopyPackB.SkipUnsignedBitFlipVector
-        vpsllw  ymm9,ymm8,7                 # generate word vector [0x8080]
+        vpsllw  ymm2,ymm1,7                 # generate word vector [0x8080]
 
 .LCopyPackB.SkipUnsignedBitFlipVector:
 
@@ -109,8 +109,8 @@ Return Value:
         jb      .LCopyPackB.ProcessRemainingColumns
 
 .LCopyPackB.ProcessNextColumnN16:
-        vpxor   xmm0,xmm0,xmm0              # clear column accumulators
-        vpxor   xmm1,xmm1,xmm1
+        vpxord  xmm30,xmm30,xmm30           # clear column accumulators
+        vpxord  xmm31,xmm31,xmm31
         mov     rdx,rsi
         add     rsi,16                      # advance next matrix B by 16 columns
         mov     rbx,r8                      # reload rows remaining
@@ -118,33 +118,33 @@ Return Value:
         jb      .LCopyPackB.ProcessRemainingRowsN16
 
 .LCopyPackB.ProcessNextRowLoopN16:
-        vmovdqu xmm2,XMMWORD PTR [rdx]      # load 4 rows
-        vmovdqu xmm3,XMMWORD PTR [rdx+r10]
-        vmovdqu xmm4,XMMWORD PTR [rdx+r10*2]
-        vmovdqu xmm5,XMMWORD PTR [rdx+r11]
+        vmovdqu64 xmm16,XMMWORD PTR [rdx]   # load 4 rows
+        vmovdqu64 xmm17,XMMWORD PTR [rdx+r10]
+        vmovdqu64 xmm18,XMMWORD PTR [rdx+r10*2]
+        vmovdqu64 xmm19,XMMWORD PTR [rdx+r11]
         lea     rdx,[rdx+r10*4]             # advance matrix B by 4 rows
 
 .LCopyPackB.InterleaveRowDataN16:
-        vpunpcklbw xmm6,xmm2,xmm3           # interleave row data
-        vpunpckhbw xmm3,xmm2,xmm3
-        vpunpcklbw xmm2,xmm4,xmm5
-        vpunpckhbw xmm5,xmm4,xmm5
-        vpunpcklwd xmm4,xmm6,xmm2
-        vpunpckhwd xmm6,xmm6,xmm2
-        vpunpcklwd xmm2,xmm3,xmm5
-        vpunpckhwd xmm3,xmm3,xmm5
-        vinserti128 ymm4,ymm4,xmm6,1
-        vinserti128 ymm2,ymm2,xmm3,1
-        vpxor   ymm4,ymm4,ymm9              # optionally adjust unsigned data
-        vpxor   ymm2,ymm2,ymm9
-        vmovdqu YMMWORD PTR [rdi],ymm4      # store interleaved rows
-        vmovdqu YMMWORD PTR [rdi+32],ymm2
-        vpmaddubsw ymm4,ymm8,ymm4           # horizontal byte+byte=word per row
-        vpmaddwd ymm4,ymm4,ymm7             # horizontal word+word=dword per row
-        vpaddd  ymm0,ymm0,ymm4              # accumulate per column
-        vpmaddubsw ymm2,ymm8,ymm2
-        vpmaddwd ymm2,ymm2,ymm7
-        vpaddd  ymm1,ymm1,ymm2
+        vpunpcklbw xmm3,xmm16,xmm17         # interleave row data
+        vpunpckhbw xmm17,xmm16,xmm17
+        vpunpcklbw xmm16,xmm18,xmm19
+        vpunpckhbw xmm19,xmm18,xmm19
+        vpunpcklwd xmm18,xmm3,xmm16
+        vpunpckhwd xmm3,xmm3,xmm16
+        vpunpcklwd xmm16,xmm17,xmm19
+        vpunpckhwd xmm17,xmm17,xmm19
+        vinserti64x2 ymm18,ymm18,xmm3,1
+        vinserti64x2 ymm16,ymm16,xmm17,1
+        vpxord  ymm18,ymm18,ymm2            # optionally adjust unsigned data
+        vpxord  ymm16,ymm16,ymm2
+        vmovdqu64 YMMWORD PTR [rdi],ymm18   # store interleaved rows
+        vmovdqu64 YMMWORD PTR [rdi+32],ymm16
+        vpmaddubsw ymm18,ymm1,ymm18         # horizontal byte+byte=word per row
+        vpmaddwd ymm18,ymm18,ymm0           # horizontal word+word=dword per row
+        vpaddd  ymm30,ymm30,ymm18           # accumulate per column
+        vpmaddubsw ymm16,ymm1,ymm16
+        vpmaddwd ymm16,ymm16,ymm0
+        vpaddd  ymm31,ymm31,ymm16
         add     rdi,64                      # advance matrix D by 64 bytes
         sub     rbx,4                       # subtract rows remaining
         jae     .LCopyPackB.ProcessNextRowLoopN16
@@ -156,29 +156,29 @@ Return Value:
 .LCopyPackB.ProcessRemainingRowsN16:
         add     rbx,4                       # correct for over-subtract above
         jz      .LCopyPackB.StoreColumnSumBufferN16
-        vmovdqu xmm2,XMMWORD PTR [rdx]
-        vmovaps xmm3,xmm9
-        vmovaps xmm4,xmm9
-        vmovaps xmm5,xmm9
+        vmovdqu64 xmm16,XMMWORD PTR [rdx]
+        vmovaps xmm17,xmm2
+        vmovaps xmm18,xmm2
+        vmovaps xmm19,xmm2
         xor     ebx,ebx                     # no more rows remaining
         test    r8b,2                       # (CountK & 2) != 0?
         jz      .LCopyPackB.InterleaveRowDataN16
-        vmovdqu xmm3,XMMWORD PTR [rdx+r10]
+        vmovdqu64 xmm17,XMMWORD PTR [rdx+r10]
         test    r8b,1                       # (CountK & 1) != 0?
         jz      .LCopyPackB.InterleaveRowDataN16
-        vmovdqu xmm4,XMMWORD PTR [rdx+r10*2]
+        vmovdqu64 xmm18,XMMWORD PTR [rdx+r10*2]
         jmp     .LCopyPackB.InterleaveRowDataN16
 
 .LCopyPackB.StoreColumnSumBufferN16:
-        vmovdqu YMMWORD PTR [r9],ymm0
-        vmovdqu YMMWORD PTR [r9+32],ymm1
+        vmovdqu64 YMMWORD PTR [r9],ymm30
+        vmovdqu64 YMMWORD PTR [r9+32],ymm31
         test    r12,r12
         jz      .LCopyPackB.N16K64PaddingFinished
         mov     rax, r12
-        vpxor   xmm0,xmm0,xmm0
+        vpxord  xmm30,xmm30,xmm30
 .LCopyPackB.N16K64Padding:
-        vmovdqu YMMWORD PTR [rdi],ymm0      # store 0
-        vmovdqu YMMWORD PTR [rdi+32],ymm0
+        vmovdqu64 YMMWORD PTR [rdi],ymm30   # store 0
+        vmovdqu64 YMMWORD PTR [rdi+32],ymm30
         add     rdi,64
         dec     rax
         jnz     .LCopyPackB.N16K64Padding
@@ -208,10 +208,10 @@ Return Value:
 //
 
 .LCopyPackB.ProcessColumnNUnaligned:
-        vpxor   xmm0,xmm0,xmm0              # clear column accumulators
-        vpxor   xmm1,xmm1,xmm1
-        vmovdqu YMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp],ymm9
-        vmovdqu YMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+32],ymm9
+        vpxord  xmm30,xmm30,xmm30           # clear column accumulators
+        vpxord  xmm31,xmm31,xmm31
+        vmovdqu YMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp],ymm2
+        vmovdqu YMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+32],ymm2
         sub     r8,4
         jb      .LCopyPackB.ProcessRemainingRowsNUnaligned
 
@@ -272,30 +272,30 @@ Return Value:
         mov     BYTE PTR [rbp+48],al
 
 .LCopyPackB.ProcessPaddedMatrixBData:
-        vmovdqu xmm2,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp]
-        vmovdqu xmm3,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+16]
-        vmovdqu xmm4,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+32]
-        vmovdqu xmm5,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+48]
-        vpunpcklbw xmm6,xmm2,xmm3           # interleave row data
-        vpunpckhbw xmm3,xmm2,xmm3
-        vpunpcklbw xmm2,xmm4,xmm5
-        vpunpckhbw xmm5,xmm4,xmm5
-        vpunpcklwd xmm4,xmm6,xmm2
-        vpunpckhwd xmm6,xmm6,xmm2
-        vpunpcklwd xmm2,xmm3,xmm5
-        vpunpckhwd xmm3,xmm3,xmm5
-        vinserti128 ymm4,ymm4,xmm6,1
-        vinserti128 ymm2,ymm2,xmm3,1
-        vpxor   ymm4,ymm4,ymm9              # optionally adjust unsigned data
-        vpxor   ymm2,ymm2,ymm9
-        vmovdqu YMMWORD PTR [rdi],ymm4      # store interleaved rows
-        vmovdqu YMMWORD PTR [rdi+32],ymm2
-        vpmaddubsw ymm4,ymm8,ymm4           # horizontal byte+byte=word per row
-        vpmaddwd ymm4,ymm4,ymm7             # horizontal word+word=dword per row
-        vpaddd  ymm0,ymm0,ymm4              # accumulate per column
-        vpmaddubsw ymm2,ymm8,ymm2
-        vpmaddwd ymm2,ymm2,ymm7
-        vpaddd  ymm1,ymm1,ymm2
+        vmovdqu64 xmm16,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp]
+        vmovdqu64 xmm17,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+16]
+        vmovdqu64 xmm18,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+32]
+        vmovdqu64 xmm19,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+48]
+        vpunpcklbw xmm3,xmm16,xmm17         # interleave row data
+        vpunpckhbw xmm17,xmm16,xmm17
+        vpunpcklbw xmm16,xmm18,xmm19
+        vpunpckhbw xmm19,xmm18,xmm19
+        vpunpcklwd xmm18,xmm3,xmm16
+        vpunpckhwd xmm3,xmm3,xmm16
+        vpunpcklwd xmm16,xmm17,xmm19
+        vpunpckhwd xmm17,xmm17,xmm19
+        vinserti64x2 ymm18,ymm18,xmm3,1
+        vinserti64x2 ymm16,ymm16,xmm17,1
+        vpxord  ymm18,ymm18,ymm2            # optionally adjust unsigned data
+        vpxord  ymm16,ymm16,ymm2
+        vmovdqu64 YMMWORD PTR [rdi],ymm18   # store interleaved rows
+        vmovdqu64 YMMWORD PTR [rdi+32],ymm16
+        vpmaddubsw ymm18,ymm1,ymm18         # horizontal byte+byte=word per row
+        vpmaddwd ymm18,ymm18,ymm0           # horizontal word+word=dword per row
+        vpaddd  ymm30,ymm30,ymm18           # accumulate per column
+        vpmaddubsw ymm16,ymm1,ymm16
+        vpmaddwd ymm16,ymm16,ymm0
+        vpaddd  ymm31,ymm31,ymm16
         lea     rsi,[rsi+r10*4]             # advance next matrix B by 4 rows
         add     rdi,64                      # advance matrix D by 64 bytes
         sub     r8,4                        # subtract rows remaining
@@ -310,8 +310,8 @@ Return Value:
 //
 
         lea     rbp,.LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp]
-        vmovdqu YMMWORD PTR [rbp],ymm9
-        vmovdqu YMMWORD PTR [rbp+32],ymm9
+        vmovdqu YMMWORD PTR [rbp],ymm2
+        vmovdqu YMMWORD PTR [rbp+32],ymm2
 
 .LCopyPackB.CopyUnalignedRowLoop:
         lea     r11,[rbp+16]                # advance next padded buffer by 16 bytes
@@ -353,15 +353,15 @@ Return Value:
         jmp     .LCopyPackB.CopyUnalignedRowLoop
 
 .LCopyPackB.StoreColumnSumBufferNUnaligned:
-        vmovdqu YMMWORD PTR [r9],ymm0
-        vmovdqu YMMWORD PTR [r9+32],ymm1
+        vmovdqu64 YMMWORD PTR [r9],ymm30
+        vmovdqu64 YMMWORD PTR [r9+32],ymm31
         test    r12,r12
         jz      .LCopyPackB.ExitRoutine
         mov     rax, r12
-        vpxor   xmm0,xmm0,xmm0
+        vpxord   xmm30,xmm30,xmm30
 .LCopyPackB.K64Padding:
-        vmovdqu YMMWORD PTR [rdi],ymm0      # store 0
-        vmovdqu YMMWORD PTR [rdi+32],ymm0
+        vmovdqu64 YMMWORD PTR [rdi],ymm30   # store 0
+        vmovdqu64 YMMWORD PTR [rdi+32],ymm30
         add     rdi,64
         dec     rax
         jne     .LCopyPackB.K64Padding
@@ -413,16 +413,16 @@ Return Value:
         push    r12
         push    r13
 
-        mov         r10,rdx                     # lda
-        mov         r11,rcx                     # m = CountM
-        lea         r12,[r8+63]
-        and         r12,NOT 63                  # align CountK up to 64
-        vpternlogd  zmm8,zmm8,zmm8,255          # generate word vector [0xFFFF]
-        vpsrlw      zmm8,zmm8,15                # generate word vector [0x0001]
-        vpsllw      zmm9,zmm8,8                 # generate word vector [0x0100]
-        vpord       zmm9,zmm8,zmm9              # generate word vector [0x0101]
-        lea         r13,[r10+r10*2]             # compute ldb * 3
-        lea         rax,[r12+r12*2]             # compute AlignedCountK * 3
+        mov     r10,rdx                         # lda
+        mov     r11,rcx                         # m = CountM
+        lea     r12,[r8+63]
+        and     r12,NOT 63                      # align CountK up to 64
+        vpternlogd zmm30,zmm30,zmm30,255        # generate word vector [0xFFFF]
+        vpsrlw  zmm30,zmm30,15                  # generate word vector [0x0001]
+        vpsllw  zmm31,zmm30,8                   # generate word vector [0x0100]
+        vpord   zmm31,zmm30,zmm31               # generate word vector [0x0101]
+        lea     r13,[r10+r10*2]                 # compute ldb * 3
+        lea     rax,[r12+r12*2]                 # compute AlignedCountK * 3
 
 //
 // Compute the conditional load mask for an unaligned CountK.
@@ -456,22 +456,22 @@ Return Value:
         jb      .LCopyPackA.ProcessRemainingColumnsM4
 
 .LCopyPackA.ProcessNextColumnLoopM4:
-        vmovdqu64  zmm4,ZMMWORD PTR [rdx]
-        vmovdqu64  zmm5,ZMMWORD PTR [rdx+r10]
-        vmovdqu64  zmm6,ZMMWORD PTR [rdx+r10*2]
-        vmovdqu64  zmm7,ZMMWORD PTR [rdx+r13]
-        vmovdqu64  ZMMWORD PTR [rcx],zmm4
-        vmovdqu64  ZMMWORD PTR [rcx+r12],zmm5
-        vmovdqu64  ZMMWORD PTR [rcx+r12*2],zmm6
-        vmovdqu64  ZMMWORD PTR [rcx+rax],zmm7
-        vpmaddubsw zmm4,zmm4,zmm9               # horizontal byte+byte=word per row
-        vpaddw     zmm0,zmm0,zmm4               # add words to row accumulators
-        vpmaddubsw zmm5,zmm5,zmm9
-        vpaddw     zmm1,zmm1,zmm5
-        vpmaddubsw zmm6,zmm6,zmm9
-        vpaddw     zmm2,zmm2,zmm6
-        vpmaddubsw zmm7,zmm7,zmm9
-        vpaddw     zmm3,zmm3,zmm7
+        vmovdqu64  zmm16,ZMMWORD PTR [rdx]
+        vmovdqu64  zmm17,ZMMWORD PTR [rdx+r10]
+        vmovdqu64  zmm18,ZMMWORD PTR [rdx+r10*2]
+        vmovdqu64  zmm19,ZMMWORD PTR [rdx+r13]
+        vmovdqu64  ZMMWORD PTR [rcx],zmm16
+        vmovdqu64  ZMMWORD PTR [rcx+r12],zmm17
+        vmovdqu64  ZMMWORD PTR [rcx+r12*2],zmm18
+        vmovdqu64  ZMMWORD PTR [rcx+rax],zmm19
+        vpmaddubsw zmm16,zmm16,zmm31             # horizontal byte+byte=word per row
+        vpaddw     zmm0,zmm0,zmm16               # add words to row accumulators
+        vpmaddubsw zmm17,zmm17,zmm31
+        vpaddw     zmm1,zmm1,zmm17
+        vpmaddubsw zmm18,zmm18,zmm31
+        vpaddw     zmm2,zmm2,zmm18
+        vpmaddubsw zmm19,zmm19,zmm31
+        vpaddw     zmm3,zmm3,zmm19
         add     rdx,64                          # src += 64
         add     rcx,64                          # dst += 64
         sub     rbx,64                          # k -= 64
@@ -480,40 +480,40 @@ Return Value:
 .LCopyPackA.ProcessRemainingColumnsM4:
         add     rbx,64                          # correct for over-subtract above
         jz      .LCopyPackA.ReduceRowSumBufferM4
-        vmovdqu8   zmm4{k1}{z},ZMMWORD PTR [rdx]
-        vmovdqu8   zmm5{k1}{z},ZMMWORD PTR [rdx+r10]
-        vmovdqu8   zmm6{k1}{z},ZMMWORD PTR [rdx+r10*2]
-        vmovdqu8   zmm7{k1}{z},ZMMWORD PTR [rdx+r13]
-        vmovdqu64  ZMMWORD PTR [rcx],zmm4
-        vmovdqu64  ZMMWORD PTR [rcx+r12],zmm5
-        vmovdqu64  ZMMWORD PTR [rcx+r12*2],zmm6
-        vmovdqu64  ZMMWORD PTR [rcx+rax],zmm7
-        vpmaddubsw zmm4,zmm4,zmm9               # horizontal byte+byte=word per row
-        vpaddw     zmm0,zmm0,zmm4               # add words to row accumulators
-        vpmaddubsw zmm5,zmm5,zmm9
-        vpaddw     zmm1,zmm1,zmm5
-        vpmaddubsw zmm6,zmm6,zmm9
-        vpaddw     zmm2,zmm2,zmm6
-        vpmaddubsw zmm7,zmm7,zmm9
-        vpaddw     zmm3,zmm3,zmm7
+        vmovdqu8   zmm16{k1}{z},ZMMWORD PTR [rdx]
+        vmovdqu8   zmm17{k1}{z},ZMMWORD PTR [rdx+r10]
+        vmovdqu8   zmm18{k1}{z},ZMMWORD PTR [rdx+r10*2]
+        vmovdqu8   zmm19{k1}{z},ZMMWORD PTR [rdx+r13]
+        vmovdqu64  ZMMWORD PTR [rcx],zmm16
+        vmovdqu64  ZMMWORD PTR [rcx+r12],zmm17
+        vmovdqu64  ZMMWORD PTR [rcx+r12*2],zmm18
+        vmovdqu64  ZMMWORD PTR [rcx+rax],zmm19
+        vpmaddubsw zmm16,zmm16,zmm31            # horizontal byte+byte=word per row
+        vpaddw     zmm0,zmm0,zmm16              # add words to row accumulators
+        vpmaddubsw zmm17,zmm17,zmm31
+        vpaddw     zmm1,zmm1,zmm17
+        vpmaddubsw zmm18,zmm18,zmm31
+        vpaddw     zmm2,zmm2,zmm18
+        vpmaddubsw zmm19,zmm19,zmm31
+        vpaddw     zmm3,zmm3,zmm19
 
 //
 // Reduce the sums for the four rows of output.
 //
 
 .LCopyPackA.ReduceRowSumBufferM4:
-        vpmaddwd       zmm0,zmm0,zmm8           # horizontal word+word=dword per row
-        vpmaddwd       zmm1,zmm1,zmm8
-        vpmaddwd       zmm2,zmm2,zmm8
-        vpmaddwd       zmm3,zmm3,zmm8
-        vextracti64x4  ymm4,zmm0,1              # fold zmm -> ymm
-        vextracti64x4  ymm5,zmm1,1
-        vextracti64x4  ymm6,zmm2,1
-        vextracti64x4  ymm7,zmm3,1
-        vpaddd         ymm0,ymm0,ymm4
-        vpaddd         ymm1,ymm1,ymm5
-        vpaddd         ymm2,ymm2,ymm6
-        vpaddd         ymm3,ymm3,ymm7
+        vpmaddwd       zmm0,zmm0,zmm30           # horizontal word+word=dword per row
+        vpmaddwd       zmm1,zmm1,zmm30
+        vpmaddwd       zmm2,zmm2,zmm30
+        vpmaddwd       zmm3,zmm3,zmm30
+        vextracti64x4  ymm16,zmm0,1              # fold zmm -> ymm
+        vextracti64x4  ymm17,zmm1,1
+        vextracti64x4  ymm18,zmm2,1
+        vextracti64x4  ymm19,zmm3,1
+        vpaddd         ymm0,ymm0,ymm16
+        vpaddd         ymm1,ymm1,ymm17
+        vpaddd         ymm2,ymm2,ymm18
+        vpaddd         ymm3,ymm3,ymm19
         vphaddd        ymm0,ymm0,ymm1           # reduce and interleave Sum1/Sum0
         vphaddd        ymm1,ymm2,ymm3           # reduce and interleave Sum3/Sum2
         vphaddd        ymm0,ymm0,ymm1           # reduce and interleave Sum3/Sum2/Sum1/Sum0
@@ -525,7 +525,7 @@ Return Value:
         jae     .LCopyPackA.ProcessNextRowM4
 
 .LCopyPackA.ProcessRemainingRows:
-        add     r11,4                       # correct for over-subtract above
+        add     r11,4                           # correct for over-subtract above
         jz      .LCopyPackA.ExitRoutine
 
 //
@@ -543,38 +543,38 @@ Return Value:
         jb      .LCopyPackA.ProcessRemainingColumnsM1
 
 .LCopyPackA.ProcessNextColumnLoopM1:
-        vmovdqu64  zmm4,ZMMWORD PTR [rdx]
-        vmovdqu64  ZMMWORD PTR [rcx],zmm4
-        vpmaddubsw zmm4,zmm4,zmm9           # horizontal byte+byte=word per row
-        vpaddw     zmm0,zmm0,zmm4           # add words to row accumulators
-        add     rdx,64                      # src += 64
-        add     rcx,64                      # dst += 64
-        sub     rbx,64                      # k -= 64
+        vmovdqu64  zmm16,ZMMWORD PTR [rdx]
+        vmovdqu64  ZMMWORD PTR [rcx],zmm16
+        vpmaddubsw zmm16,zmm16,zmm31            # horizontal byte+byte=word per row
+        vpaddw     zmm0,zmm0,zmm16              # add words to row accumulators
+        add     rdx,64                          # src += 64
+        add     rcx,64                          # dst += 64
+        sub     rbx,64                          # k -= 64
         jae     .LCopyPackA.ProcessNextColumnLoopM1
 
 .LCopyPackA.ProcessRemainingColumnsM1:
-        add     rbx,64                      # correct for over-subtract above
+        add     rbx,64                          # correct for over-subtract above
         jz      .LCopyPackA.ReduceRowSumBufferM1
-        vmovdqu8   zmm4{k1}{z},ZMMWORD PTR [rdx]
-        vmovdqu64  ZMMWORD PTR [rcx],zmm4
-        vpmaddubsw zmm4,zmm4,zmm9           # horizontal byte+byte=word per row
-        vpaddw     zmm0,zmm0,zmm4           # add words to row accumulators
+        vmovdqu8   zmm16{k1}{z},ZMMWORD PTR [rdx]
+        vmovdqu64  ZMMWORD PTR [rcx],zmm16
+        vpmaddubsw zmm16,zmm16,zmm31            # horizontal byte+byte=word per row
+        vpaddw     zmm0,zmm0,zmm16              # add words to row accumulators
 
 //
 // Reduce the sum for the single row of output.
 //
 
 .LCopyPackA.ReduceRowSumBufferM1:
-        vpmaddwd       zmm0,zmm0,zmm8           # horizontal word+word=dword per row
-        vextracti64x4  ymm4,zmm0,1             # fold zmm -> ymm
-        vpaddd         ymm0,ymm0,ymm4
+        vpmaddwd       zmm0,zmm0,zmm30          # horizontal word+word=dword per row
+        vextracti64x4  ymm16,zmm0,1             # fold zmm -> ymm
+        vpaddd         ymm0,ymm0,ymm16
         vextracti128   xmm1,ymm0,1              # fold ymm -> xmm
         vpaddd         xmm0,xmm0,xmm1           # reduction
         vphaddd        xmm0,xmm0,xmm0
         vphaddd        xmm0,xmm0,xmm0
         vmovd          DWORD PTR [r9],xmm0
-        add     r9,4                        # advance row sum buffer by 1 dword
-        dec     r11                         # decrement rows remaining
+        add     r9,4                            # advance row sum buffer by 1 dword
+        dec     r11                             # decrement rows remaining
         jnz     .LCopyPackA.ProcessNextRowM1
 
 //
