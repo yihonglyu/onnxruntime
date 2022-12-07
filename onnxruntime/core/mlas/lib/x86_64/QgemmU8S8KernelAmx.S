@@ -210,72 +210,25 @@ Return Value:
 .LCopyPackB.ProcessColumnNUnaligned:
         vpxord  xmm30,xmm30,xmm30           # clear column accumulators
         vpxord  xmm31,xmm31,xmm31
-        vmovdqu YMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp],ymm2
-        vmovdqu YMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+32],ymm2
+        neg     ecx
+        and     ecx,63
+        mov     rbx,-1
+        shr     rbx,cl                      # mask for left over N
+        kmovq   k1,rbx                      # mask
         sub     r8,4
         jb      .LCopyPackB.ProcessRemainingRowsNUnaligned
 
 .LCopyPackB.ProcessNextRowLoopNUnaligned:
-        mov     rdx,rsi
-        lea     rbp,.LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp]
-        test    cl,8                        # (CountN & 8) != 0?
-        jz      .LCopyPackB.CopyRemainingCountNLessThan8K4
-        mov     rax,QWORD PTR [rdx]
-        mov     QWORD PTR [rbp],rax
-        mov     rax,QWORD PTR [rdx+r10]
-        mov     QWORD PTR [rbp+16],rax
-        mov     rax,QWORD PTR [rdx+r10*2]
-        mov     QWORD PTR [rbp+32],rax
-        mov     rax,QWORD PTR [rdx+r11]
-        mov     QWORD PTR [rbp+48],rax
-        add     rdx,8                       # advance matrix B
-        add     rbp,8                       # advance padded buffer destination
-
-.LCopyPackB.CopyRemainingCountNLessThan8K4:
-        test    cl,4                        # (CountN & 4) != 0?
-        jz      .LCopyPackB.CopyRemainingCountNLessThan4K4
-        mov     eax,DWORD PTR [rdx]
-        mov     DWORD PTR [rbp],eax
-        mov     eax,DWORD PTR [rdx+r10]
-        mov     DWORD PTR [rbp+16],eax
-        mov     eax,DWORD PTR [rdx+r10*2]
-        mov     DWORD PTR [rbp+32],eax
-        mov     eax,DWORD PTR [rdx+r11]
-        mov     DWORD PTR [rbp+48],eax
-        add     rdx,4                       # advance matrix B
-        add     rbp,4                       # advance padded buffer destination
-
-.LCopyPackB.CopyRemainingCountNLessThan4K4:
-        test    cl,2                        # (CountN & 2) != 0?
-        jz      .LCopyPackB.CopyRemainingCountNLessThan2K4
-        movzx   eax,WORD PTR [rdx]
-        mov     WORD PTR [rbp],ax
-        movzx   eax,WORD PTR [rdx+r10]
-        mov     WORD PTR [rbp+16],ax
-        movzx   eax,WORD PTR [rdx+r10*2]
-        mov     WORD PTR [rbp+32],ax
-        movzx   eax,WORD PTR [rdx+r11]
-        mov     WORD PTR [rbp+48],ax
-        add     rdx,2                       # advance matrix B
-        add     rbp,2                       # advance padded buffer destination
-
-.LCopyPackB.CopyRemainingCountNLessThan2K4:
-        test    cl,1                        # (CountN & 1) != 0?
-        jz      .LCopyPackB.ProcessPaddedMatrixBData
-        movzx   eax,BYTE PTR [rdx]
-        mov     BYTE PTR [rbp],al
-        movzx   eax,BYTE PTR [rdx+r10]
-        mov     BYTE PTR [rbp+16],al
-        movzx   eax,BYTE PTR [rdx+r10*2]
-        mov     BYTE PTR [rbp+32],al
-        movzx   eax,BYTE PTR [rdx+r11]
-        mov     BYTE PTR [rbp+48],al
-
-.LCopyPackB.ProcessPaddedMatrixBData:
-        vmovdqu64 xmm16,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp]
-        vmovdqu64 xmm17,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+16]
-        vmovdqu64 xmm18,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+32]
-        vmovdqu64 xmm19,XMMWORD PTR .LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp+48]
+        vmovdqu64 xmm16,xmm2
+        vmovdqu8 xmm16 {k1},XMMWORD PTR [rsi]   # load 4 rows
+        vmovdqu64 xmm17,xmm2
+        vmovdqu8 xmm17 {k1},XMMWORD PTR [rsi+r10]
+        vmovdqu64 xmm18,xmm2
+        vmovdqu8 xmm18 {k1},XMMWORD PTR [rsi+r10*2]
+        vmovdqu64 xmm19,xmm2
+        vmovdqu8 xmm19 {k1},XMMWORD PTR [rsi+r11]
+        lea     rsi,[rsi+r10*4]             # advance next matrix B by 4 rows
+.LCopyPackB.InterleaveRowDataUnaligned:
         vpunpcklbw xmm3,xmm16,xmm17         # interleave row data
         vpunpckhbw xmm17,xmm16,xmm17
         vpunpcklbw xmm16,xmm18,xmm19
@@ -296,61 +249,31 @@ Return Value:
         vpmaddubsw ymm16,ymm1,ymm16
         vpmaddwd ymm16,ymm16,ymm0
         vpaddd  ymm31,ymm31,ymm16
-        lea     rsi,[rsi+r10*4]             # advance next matrix B by 4 rows
         add     rdi,64                      # advance matrix D by 64 bytes
         sub     r8,4                        # subtract rows remaining
         jae     .LCopyPackB.ProcessNextRowLoopNUnaligned
-
-.LCopyPackB.ProcessRemainingRowsNUnaligned:
-        add     r8,4
-        jz      .LCopyPackB.StoreColumnSumBufferNUnaligned
 
 //
 // Process the less than 4 remaining rows where the row has less than 16 columns.
 //
 
-        lea     rbp,.LGemmU8S8CopyPackBFrame_PaddedMatrixBData[rsp]
-        vmovdqu YMMWORD PTR [rbp],ymm2
-        vmovdqu YMMWORD PTR [rbp+32],ymm2
-
-.LCopyPackB.CopyUnalignedRowLoop:
-        lea     r11,[rbp+16]                # advance next padded buffer by 16 bytes
-        mov     rdx,rsi
-        test    cl,8                        # (CountN & 8) != 0?
-        jz      .LCopyPackB.CopyRemainingCountNLessThan8KSmall
-        mov     rax,QWORD PTR [rdx]
-        mov     QWORD PTR [rbp],rax
-        add     rdx,8                       # advance matrix B
-        add     rbp,8                       # advance padded buffer destination
-
-.LCopyPackB.CopyRemainingCountNLessThan8KSmall:
-        test    cl,4                        # (CountN & 4) != 0?
-        jz      .LCopyPackB.CopyRemainingCountNLessThan4KSmall
-        mov     eax,DWORD PTR [rdx]
-        mov     DWORD PTR [rbp],eax
-        add     rdx,4                       # advance matrix B
-        add     rbp,4                       # advance padded buffer destination
-
-.LCopyPackB.CopyRemainingCountNLessThan4KSmall:
-        test    cl,2                      # (CountN & 2) != 0?
-        jz      .LCopyPackB.CopyRemainingCountNLessThan2KSmall
-        movzx   eax,WORD PTR [rdx]
-        mov     WORD PTR [rbp],ax
-        add     rdx,2                       # advance matrix B
-        add     rbp,2                       # advance padded buffer destination
-
-.LCopyPackB.CopyRemainingCountNLessThan2KSmall:
-        test    cl,1                        # (CountN & 1) != 0?
-        jz      .LCopyPackB.DoneCopyRemainingCountNKSmall
-        movzx   eax,BYTE PTR [rdx]
-        mov     BYTE PTR [rbp],al
-
-.LCopyPackB.DoneCopyRemainingCountNKSmall:
-        dec     r8
-        jz      .LCopyPackB.ProcessPaddedMatrixBData
-        add     rsi,r10                     # advance next matrix B by 1 row
-        mov     rbp,r11
-        jmp     .LCopyPackB.CopyUnalignedRowLoop
+.LCopyPackB.ProcessRemainingRowsNUnaligned:
+        add     r8,4
+        jz      .LCopyPackB.StoreColumnSumBufferNUnaligned
+        vmovaps xmm16,xmm2
+        vmovdqu8 xmm16 {k1},XMMWORD PTR [rsi]
+        vmovaps xmm17,xmm2
+        vmovaps xmm18,xmm2
+        vmovaps xmm19,xmm2
+        mov     rbx,r8
+        xor     r8b,r8b                     # no more rows remaining
+        test    bl,2                        # (CountK & 2) != 0?
+        jz      .LCopyPackB.InterleaveRowDataUnaligned
+        vmovdqu8 xmm17 {k1},XMMWORD PTR [rsi+r10]
+        test    bl,1                        # (CountK & 1) != 0?
+        jz      .LCopyPackB.InterleaveRowDataUnaligned
+        vmovdqu8 xmm18 {k1},XMMWORD PTR [rsi+r10*2]
+        jmp     .LCopyPackB.InterleaveRowDataUnaligned
 
 .LCopyPackB.StoreColumnSumBufferNUnaligned:
         vmovdqu64 YMMWORD PTR [r9],ymm30
