@@ -26,6 +26,7 @@ struct ConvOpAndTestAttributes {
   std::unordered_set<std::string> excluded_providers;
   string activation = "";
   vector<float> activation_parameters = {};
+  bool channel_last = false;
 };
 
 void TestConvFp16Op(const ConvOpAndTestAttributes& attributes,
@@ -39,11 +40,14 @@ void TestConvFp16Op(const ConvOpAndTestAttributes& attributes,
                 int opset = 11) {
   std::unique_ptr<OpTester> tester;
   if (!attributes.activation.empty()) {
-    tester = std::make_unique<OpTester>("FusedConv", 1, onnxruntime::kMSDomain);
+    tester = std::make_unique<OpTester>("NhwcFusedConv", 1, onnxruntime::kMSDomain);
     tester->AddAttribute("activation", attributes.activation);
 
     if (!attributes.activation_parameters.empty()) {
       tester->AddAttribute("activation_params", attributes.activation_parameters);
+    }
+    if (attributes.channel_last) {
+      tester->AddAttribute("channel_last", int64_t(1));
     }
   } else {
     tester = std::make_unique<OpTester>("Conv", opset);

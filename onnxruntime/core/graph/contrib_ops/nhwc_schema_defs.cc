@@ -383,5 +383,37 @@ ONNX_MS_OPERATOR_SET_SCHEMA(
     NhwcConv,
     1,
     OpSchema().FillUsing(ConvOpSchemaGenerator()));
+
+ONNX_MS_OPERATOR_SET_SCHEMA(NhwcFusedConv, 1,
+                            OpSchema()
+                                .SetDoc(R"DOC(
+The fused convolution operator schema is the same as Conv, with one optional input `Z'
+that is added to the result tensor, and two optional attributes: activation, which supports
+fused activation operator; and channels_last, which support NHWC format.)DOC")
+                                .Input(0, "X", "", "T")
+                                .Input(1, "W", "", "T")
+                                .Input(2, "B", "", "T", OpSchema::Optional)
+                                .Input(3, "Z", "", "T", OpSchema::Optional)
+                                .Output(0, "Y", "", "T")
+                                .Attr("auto_pad", "", AttributeProto::STRING, std::string("NOTSET"))
+                                .Attr("kernel_shape", "", AttributeProto::INTS, OPTIONAL_VALUE)
+                                .Attr("dilations", "", AttributeProto::INTS, OPTIONAL_VALUE)
+                                .Attr("strides", "", AttributeProto::INTS, OPTIONAL_VALUE)
+                                .Attr("pads", "", AttributeProto::INTS, OPTIONAL_VALUE)
+                                .Attr("group", "", AttributeProto::INT, static_cast<int64_t>(1))
+                                .Attr("activation", "", AttributeProto::STRING, OPTIONAL_VALUE)
+                                .Attr("activation_params", "", AttributeProto::FLOATS, OPTIONAL_VALUE)
+                                .Attr("channels_last", "", AttributeProto::INT, static_cast<int64_t>(0))
+                                .TypeConstraint("T", {"tensor(float16)"}, "Constrain input and output types to float16 tensors")
+                                .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
+                                  ONNX_NAMESPACE::propagateElemTypeFromInputToOutput(ctx, 0, 0);
+                                  if (getAttribute(ctx, "channels_last", 0) == 0) {
+                                    ONNX_NAMESPACE::convPoolShapeInference(ctx, true, false, 0, 1);
+                                  } else {
+                                    onnxruntime::contrib::convPoolShapeInferenceNhwc(ctx, true, false, 0, 1);
+                                  }
+                                  // TODO Do we need to verify shape of B and Z?
+                                }));
+
 }  // namespace contrib
 }  // namespace onnxruntime

@@ -235,11 +235,7 @@ Status FusedConvFp16::Compute(OpKernelContext* context) const {
   const Tensor* W = is_W_packed_? nullptr : context->Input<Tensor>(1);
   const auto& W_shape = W ? W->Shape() : W_shape_;
   const Tensor* B = num_inputs >= 3 ? context->Input<Tensor>(2) : nullptr;
-
-  // TODO!!
-  // This tensor should be added to the result before activation is applied
-  // We need to augment the post processor to accept an addition operation.
-  // const Tensor* Sum = num_inputs >= 4 ? context->Input<Tensor>(3) : nullptr;
+  const Tensor* Sum = num_inputs >= 4 ? context->Input<Tensor>(3) : nullptr;
 
   const int64_t N = X->Shape()[0];
   const int64_t M = W_shape[0];
@@ -332,6 +328,7 @@ Status FusedConvFp16::Compute(OpKernelContext* context) const {
   const auto* Xdata = X->Data<MLFloat16>();
   const auto* Bdata = B != nullptr ? B->Data<MLFloat16>() : nullptr;
   auto* Ydata = Y->MutableData<MLFloat16>();
+  const auto* SumData = Sum != nullptr ? Sum->Data<MLFloat16>() : nullptr;
 
   BufferUniquePtr transpose_input_buffer;
   BufferUniquePtr transpose_output_buffer;
@@ -403,6 +400,7 @@ Status FusedConvFp16::Compute(OpKernelContext* context) const {
   for (int64_t image_id = 0; image_id < N; ++image_id) {
     const auto* input_data = Xdata;
     auto* output_data = Ydata;
+    const MLFloat16* sum_data = SumData;
 
     if (!channels_last_) {
       // Transpose the input from channels first (CHW) to channels last (HWC).
@@ -413,6 +411,7 @@ Status FusedConvFp16::Compute(OpKernelContext* context) const {
           static_cast<size_t>(input_image_size));
       input_data = static_cast<MLFloat16*>(transpose_input_buffer.get());
       output_data = static_cast<MLFloat16*>(transpose_output_buffer.get());
+      sum_data = nullptr;
     }
 
     // Threaded implementation of ND convolution is not yet supported, so
@@ -459,10 +458,11 @@ Status FusedConvFp16::Compute(OpKernelContext* context) const {
       }
 
       auto* worker_output = output_data + output_start * M;
+      auto* worker_addon = (sum_data!=nullptr)? sum_data + output_start * M : nullptr;
 
       if (is_depthwise_conv) {
         // TODO!! add Sum tensor to activation
-        MLAS_HALF_GEMM_ACTIVATION_PROCESSOR act(activation_);
+        MLAS_HALF_GEMM_ACTIVATION_PROCESSOR act(activation_, worker_addon);
         MlasConvDepthwise(
             worker_indirection_buffer,
             reordered_W,
@@ -532,7 +532,8 @@ Status FusedConvFp16::Compute(OpKernelContext* context) const {
           }
 
           // TODO!! add Sum tensor to activation
-          MLAS_HALF_GEMM_ACTIVATION_PROCESSOR act(activation_);
+          const auto* gemmadd = (worker_output == nullptr) ? nullptr : worker_output + group_id * group_output_channels;
+          MLAS_HALF_GEMM_ACTIVATION_PROCESSOR act(activation_, gemmadd);
           MLAS_HALF_GEMM_DATA_PARAMS gemm_params;
           gemm_params.A = AData;
           gemm_params.lda = lda;
@@ -567,10 +568,22 @@ Status FusedConvFp16::Compute(OpKernelContext* context) const {
           Ydata,
           static_cast<size_t>(output_image_size),
           static_cast<size_t>(M));
-    }
+      if (SumData) {
+        MLAS_ACTIVATION activation;
+        activation.ActivationKind = MlasIdentityActivation;
+        MLAS_HALF_GEMM_ACTIVATION_PROCESSOR proc(activation, SumData);
+        proc.Process(Ydata, 0, 0, static_cast<size_t>(M),
+                     static_cast<size_t>(output_image_size),
+                     static_cast<size_t>(output_image_size));
+      }
+      // TODO!! add SumData into Ydata
 
+    }
     Xdata += X_offset;
     Ydata += Y_offset;
+    if (SumData) {
+      SumData += Y_offset;
+    }
   }
 
   return Status::OK();
@@ -588,7 +601,7 @@ ONNX_CPU_OPERATOR_TYPED_KERNEL(
 #ifndef DISABLE_CONTRIB_OPS
 namespace contrib {
     ONNX_CPU_OPERATOR_TYPED_MS_KERNEL(
-        FusedConv,
+        NhwcFusedConv,
         1,
         MLFloat16,
         KernelDefBuilder()

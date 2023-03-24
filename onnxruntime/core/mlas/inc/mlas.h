@@ -1433,28 +1433,31 @@ public:
 };
 
 /**
- * @brief Half precision activation functions
+ * @brief Half precision activation functions, with optional sum tensor.
+ * Supplied sum tensor must be the same layout as the GEMM output tensor.
+ * And the supplied sum tensor will be added to the final result.
 */
-class MLAS_HALF_GEMM_ACTIVATION_PROCESSOR : public MLAS_HALF_GEMM_POSTPROCESSOR {
-public:
+class MLAS_HALF_GEMM_ACTIVATION_PROCESSOR : public MLAS_HALF_GEMM_POSTPROCESSOR
+{
+   public:
     MLAS_HALF_GEMM_ACTIVATION_PROCESSOR(
-        const MLAS_ACTIVATION& Activation
-        ) :
-            Activation_(Activation)
+        const MLAS_ACTIVATION& Activation,
+        const MLAS_FP16* SumBuf)
+        : Activation_(Activation), SumBuf_(SumBuf)
     {}
 
-    void
-    Process(
+    void Process(
         MLAS_FP16* C,
         size_t StartM,
         size_t StartN,
         size_t CountM,
         size_t CountN,
         size_t ldc
-        ) const override;
+    ) const override;
 
-private:
+   private:
     const MLAS_ACTIVATION& Activation_;
+    const MLAS_FP16* SumBuf_;
 };
 
 inline
@@ -1467,7 +1470,7 @@ MlasFp16Activation(
     size_t ldc
     )
 {
-    MLAS_HALF_GEMM_ACTIVATION_PROCESSOR proc(*Activation);
+    MLAS_HALF_GEMM_ACTIVATION_PROCESSOR proc(*Activation, nullptr);
     proc.Process(Buffer, 0, 0, M, N, ldc);
 }
 
