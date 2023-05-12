@@ -14,3 +14,4 @@ from .quantize import quantize  # noqa: F401
 from .quantize import quantize_dynamic  # noqa: F401
 from .quantize import quantize_static  # noqa: F401
 from .shape_inference import quant_pre_process  # noqa: F401
+from .q4dq_wrapper import Q4dqWrapper

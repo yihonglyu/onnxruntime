@@ -111,16 +111,18 @@ parseArgs(int argc, char* argv[], Cli& cli)
 
     cli.output_file = getCmdOption(argv + 2, argv + argc, "--output_file");
     char* output_format_str = getCmdOption(argv + 2, argv + argc, "--output_format");
-    if (strncmp(output_format_str, "csv", 4) == 0) {
-        cli.output_bin = false;
-    } else if (strncmp(output_format_str, "bin", 4) == 0) {
-        cli.output_bin = true;
-        if (!cli.output_file) {
-            // can't dump binary file to std-out
+    if (output_format_str) {
+        if (strncmp(output_format_str, "csv", 4) == 0) {
+            cli.output_bin = false;
+        } else if (strncmp(output_format_str, "bin", 4) == 0) {
+            cli.output_bin = true;
+            if (!cli.output_file) {
+                // can't dump binary file to std-out
+                return false;
+            }
+        } else {
             return false;
         }
-    } else {
-        return false;
     }
     return true;
 }
@@ -152,8 +154,8 @@ void
 writeUint8Txt(std::ostream& out, const uint8_t* data, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
-        out << data[i] << "  ";
-        if (i % 16 == 0) {
+        out << (int)data[i] << "  ";
+        if (((i+1) % 21 == 0)) {
             out << std::endl;
         }
     }
