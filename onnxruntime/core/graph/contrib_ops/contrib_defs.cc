@@ -1696,7 +1696,7 @@ Matrix product that behaves like numpy.matmul: https://docs.scipy.org/doc/numpy-
  * @param input_b_idx         points to the quantized right hand side matrix
  * @param input_bshape_idx    points to the shape tensor of the right hand side matrix
  */
-static void matmulQ4ShapeInference(ONNX_NAMESPACE::InferenceContext& ctx, int input_a_idx, int input_b_idx, int input_bshape_idx) {
+static void matmulQ4ShapeInference(ONNX_NAMESPACE::InferenceContext& ctx, int input_a_idx, int input_b_idx, int input_bshape_idx, MLAS_BLK_QUANT_TYPE blk_quant_type) {
   if (!hasInputShape(ctx, input_a_idx) || !hasInputShape(ctx, input_b_idx)) {
     return;
   }
@@ -1737,6 +1737,7 @@ static void matmulQ4ShapeInference(ONNX_NAMESPACE::InferenceContext& ctx, int in
   }
 
   size_t expectedPackSize = MlasQ4GemmPackBSize(
+      blk_quant_type,
       shapeR.dim(shapeR.dim_size() - 1).dim_value(),
       shapeR.dim(shapeR.dim_size() - 2).dim_value());
   if (blob_shape.dim_size() != 1 && (size_t)blob_shape.dim(0).dim_value() != expectedPackSize) {
@@ -1782,6 +1783,7 @@ ONNX_MS_OPERATOR_SET_SCHEMA(MatMulFpQ4, 1,
                             OpSchema()
                                 .SetDoc(R"DOC(
 Matrix product with right hand matrix being pre-packed and quantized int4 data blob.)DOC")
+                                .Attr("blk_quant_type", "", AttributeProto::INT, static_cast<int64_t>(1))
                                 .Input(0, "A", "N-dimensional matrix A", "T1")
                                 .Input(1, "B", "1-dimensional data blob", "T2")
                                 .Input(2, "B_shape", "Shape information of B", "T3")
@@ -1803,8 +1805,10 @@ Matrix product with right hand matrix being pre-packed and quantized int4 data b
                                   }
 
                                   y_type->mutable_tensor_type()->set_elem_type(ONNX_NAMESPACE::TensorProto::FLOAT);
+                                  auto blk_quant_v = getAttribute(ctx, "blk_quant_type", 1);
+                                  MLAS_BLK_QUANT_TYPE blk_quant_type = blk_quant_v == 0 ? BlkQ4Sym : BlkQ4Zp8;
 
-                                  matmulQ4ShapeInference(ctx, 0, 1, 2);
+                                  matmulQ4ShapeInference(ctx, 0, 1, 2, blk_quant_type);
                                 }));
 
 constexpr const char* TransposeMatMul_doc = R"DOC(

@@ -46,6 +46,10 @@ usage(const char* cli)
     std::cout << "    NUM_ROWS:     number of rows in the matrix." << std::endl;
     std::cout << "    NUM_COLS:     number of columns in the matrix." << std::endl;
     std::cout << "options:" << std::endl;
+    std::cout << "    --quant_type {0, 1}." << std::endl;
+    std::cout << "            Type of the block quantization." << std::endl;
+    std::cout << "            0: Symmetric block quant, with fp32 scale." << std::endl;
+    std::cout << "            1: (default) Block quant with fp32 scale and int8 zero-point." << std::endl;
     std::cout << "    --input_file {PATH}." << std::endl;
     std::cout << "            Path to the input file." << std::endl;
     std::cout << "    --input_offset {N}." << std::endl;
@@ -68,6 +72,8 @@ struct Cli {
 
     size_t num_rows = 0;
     size_t num_cols = 0;
+
+    MLAS_BLK_QUANT_TYPE quant_type = BlkQ4Zp8;
 
     char*  input_file = nullptr;
     size_t input_offset = 0;
@@ -99,6 +105,13 @@ parseArgs(int argc, char* argv[], Cli& cli)
         return false;
     }
 
+    char* quant_t = getCmdOption(argv + 4, argv + argc, "--quant_type");
+    if (quant_t) {
+        if (strncmp(quant_t, "0", 2) == 0) {
+            cli.quant_type = BlkQ4Sym;
+        }
+    }
+
     cli.input_file = getCmdOption(argv + 4, argv + argc, "--input_file");
     char* offset_str = getCmdOption(argv + 4, argv + argc, "--input_offset");
     if (offset_str) {
@@ -109,8 +122,8 @@ parseArgs(int argc, char* argv[], Cli& cli)
         }
     }
 
-    cli.output_file = getCmdOption(argv + 2, argv + argc, "--output_file");
-    char* output_format_str = getCmdOption(argv + 2, argv + argc, "--output_format");
+    cli.output_file = getCmdOption(argv + 4, argv + argc, "--output_file");
+    char* output_format_str = getCmdOption(argv + 4, argv + argc, "--output_format");
     if (output_format_str) {
         if (strncmp(output_format_str, "csv", 4) == 0) {
             cli.output_bin = false;
@@ -173,9 +186,10 @@ quantize(const Cli& cli)
         return;
     }
 
-    size_t qsize = MlasQ4GemmPackBSize(cli.num_cols, cli.num_rows);
+    size_t qsize = MlasQ4GemmPackBSize(cli.quant_type, cli.num_cols, cli.num_rows);
     std::vector<uint8_t> dstbuf(qsize);
-    MlasQ4GemmPackB(dstbuf.data(), (const float*)srcbuf.data(), cli.num_cols, cli.num_rows, cli.num_cols);
+    MlasQ4GemmPackB(cli.quant_type, dstbuf.data(), (const float*)srcbuf.data(), cli.num_cols,
+                    cli.num_rows, cli.num_cols);
 
     if (cli.output_bin) {
         std::ofstream out(cli.output_file, std::ios::out | std::ios::binary);
@@ -204,7 +218,7 @@ quantize(const Cli& cli)
 void
 dequantize(const Cli& cli)
 {
-    size_t qsize = MlasQ4GemmPackBSize(cli.num_cols, cli.num_rows);
+    size_t qsize = MlasQ4GemmPackBSize(cli.quant_type, cli.num_cols, cli.num_rows);
     std::vector<uint8_t> srcbuf;
     readBinFile(cli.input_file, cli.input_offset, qsize, srcbuf);
     if (srcbuf.size() == 0) {
@@ -214,7 +228,8 @@ dequantize(const Cli& cli)
     }
 
     std::vector<float> dstbuf(cli.num_rows * cli.num_cols);
-    MlasQ4GemmUnPackB(dstbuf.data(), srcbuf.data(), cli.num_cols, cli.num_rows, cli.num_cols);
+    MlasQ4GemmUnPackB(cli.quant_type, dstbuf.data(), srcbuf.data(), cli.num_cols, cli.num_rows,
+                      cli.num_cols);
 
     if (cli.output_bin) {
         std::ofstream out(cli.output_file, std::ios::out | std::ios::binary);
@@ -264,4 +279,3 @@ main(int argc, char* argv[])
 
     return 0;
 }
-

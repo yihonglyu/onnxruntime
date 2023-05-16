@@ -4,25 +4,34 @@
 # license information.
 # --------------------------------------------------------------------------
 
-import numpy as np
-import onnx
-from onnx.onnx_pb import ModelProto, GraphProto, NodeProto, TensorProto
 from typing import Tuple
 
+import numpy as np
+import onnx
+from onnx.onnx_pb import GraphProto, ModelProto, NodeProto, TensorProto
+
 from .onnx_model import ONNXModel
-from .quant_utils import attribute_to_kwarg, find_by_name
 from .q4dq_wrapper import Q4dqWrapper
+from .quant_utils import attribute_to_kwarg
+
 
 class MatMulWeight4Quantizer:
     """Perform 4b quantization of constant MatMul weights"""
 
-    def __init__(
-        self,
-        model : ModelProto,
-        q4dq : Q4dqWrapper
-    ):
+    ##################
+    # quantization types, must be consistent with native code type
+    # MLAS_BLK_QUANT_TYPE defined in mlas_q4.h
+
+    # 32 number block, symmetric quantization, with one fp32 as scale, zero point is always 0
+    BlkQ4Sym = 0
+
+    # 32 number block, quantization, with one fp32 as scale, one uint8 zero point
+    BlkQ4Zp8 = 1
+
+    def __init__(self, model: ModelProto, q4dq: Q4dqWrapper, quant_type: int):
         self.model = ONNXModel(model)
         self.q4dq = q4dq
+        self.quant_type = quant_type
 
     @staticmethod
     def __get_initializer(name, graph_path: list[GraphProto]) -> Tuple[TensorProto, GraphProto]:
@@ -33,48 +42,50 @@ class MatMulWeight4Quantizer:
                     return tensor, graph
         return None, None
 
-    def _q4_matmul_node_weight(self, node: NodeProto, graph_stack: list[GraphProto]) -> NodeProto :
+    def _q4_matmul_node_weight(self, node: NodeProto, graph_stack: list[GraphProto]) -> NodeProto:
         """If the node is MatMul with fp32 const weight, quantize the weight with int4, and return the new node"""
 
         if node.op_type != "MatMul":
             return node  # only care about MatMul for now
-        
+
         inputB = node.input[1]  # noqa: N806
         B, Bs_graph = MatMulWeight4Quantizer.__get_initializer(inputB, graph_stack)  # noqa: N806
         if B is None:
             return node  # only care about constant weight
-        
+
         # TODO!! assume B is not used by any other node
         B_array = onnx.numpy_helper.to_array(B)  # noqa: N806
         if len(B_array.shape) != 2:
             return node  # can only process 2-D matrix
 
         rows, cols = B_array.shape
-        packed = self.q4dq.quantize(B_array)
+        packed = self.q4dq.quantize(B_array, self.quant_type)
 
-        B_quant = onnx.numpy_helper.from_array(packed)
-        B_quant.name = B.name + '_Q4'
+        B_quant = onnx.numpy_helper.from_array(packed)  # noqa: N806
+        B_quant.name = B.name + "_Q4"
         Bs_graph.initializer.remove(B)
         for input in Bs_graph.input:
             if input.name == inputB:
                 Bs_graph.input.remove(input)
                 break
 
-        B_shape = onnx.numpy_helper.from_array(np.array([rows,cols]).astype(np.int64))
-        B_shape.name = B.name + '_shape'
+        B_shape = onnx.numpy_helper.from_array(np.array([rows, cols]).astype(np.int64))  # noqa: N806
+        B_shape.name = B.name + "_shape"
         Bs_graph.initializer.extend([B_quant, B_shape])
 
+        kwargs = {}
+        kwargs["blk_quant_type"] = self.quant_type
         matmul_q4_node = onnx.helper.make_node(
-            'MatMulFpQ4',
+            "MatMulFpQ4",
             inputs=[node.input[0], B_quant.name, B_shape.name],
             outputs=[node.output[0]],
-            name=node.name + '_Q4' if node.name else '',
-            domain='com.microsoft'
+            name=node.name + "_Q4" if node.name else "",
+            domain="com.microsoft",
+            **kwargs,
         )
         return matmul_q4_node
 
-
-    def _process_subgraph(self, graph_stack : list[GraphProto]):
+    def _process_subgraph(self, graph_stack: list[GraphProto]):
         new_nodes = []
         graph = graph_stack[-1]
 
@@ -105,8 +116,7 @@ class MatMulWeight4Quantizer:
                     node.op_type, node.input, node.output, name=node.name, **kwargs
                 )
 
-            node = self._q4_matmul_node_weight(node, graph_stack)
-            new_nodes.append(node)
+            new_nodes.append(self._q4_matmul_node_weight(node, graph_stack))
 
         graph.ClearField("node")
         graph.node.extend(new_nodes)
@@ -120,9 +130,9 @@ class MatMulWeight4Quantizer:
 
         has_ms_domain = False
         for opset in opset_import:
-            if opset.domain == 'com.microsoft':
+            if opset.domain == "com.microsoft":
                 has_ms_domain = True
         if not has_ms_domain:
-            opset_import.extend([onnx.helper.make_opsetid('com.microsoft',1)])
+            opset_import.extend([onnx.helper.make_opsetid("com.microsoft", 1)])
 
         self._process_subgraph(graph_stack)

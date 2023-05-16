@@ -16,10 +16,10 @@ import numpy.typing as npt
 class Q4dqWrapper:
     """A wrapper to native command line onnxruntime_mlas_q4dq"""
 
-    def __init__(self, exepath):
+    def __init__(self, exepath: str):
         self.q4dq_cmd = exepath
 
-    def quantize(self, fp32weight: npt.ArrayLike) -> np.ndarray:
+    def quantize(self, fp32weight: npt.ArrayLike, quant_type: int) -> np.ndarray:
         """4b quantize fp32 weight to a blob"""
 
         array = fp32weight.astype(np.float32)
@@ -33,8 +33,8 @@ class Q4dqWrapper:
 
             q4file = os.path.join(tmpdirname, "q4weight")
 
-            cmd = "{cmdpath} q {k} {n} --input_file {fp32} --output_file {q4} --output_format bin".format(
-                cmdpath=self.q4dq_cmd, k=rows, n=cols, fp32=fp32file, q4=q4file
+            cmd = "{cmdpath} q {k} {n} --quant_type {qtype} --input_file {fp32} --output_file {q4} --output_format bin".format(
+                cmdpath=self.q4dq_cmd, k=rows, n=cols, qtype=quant_type, fp32=fp32file, q4=q4file
             )
             subprocess.run(cmd, shell=True)
 

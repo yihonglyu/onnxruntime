@@ -18,9 +18,13 @@ namespace contrib {
 
 class MatMulFpQ4 final : public OpKernel {
  public:
-  MatMulFpQ4(const OpKernelInfo& info) : OpKernel(info) {}
+  MatMulFpQ4(const OpKernelInfo& info) : OpKernel(info) {
+    const auto t = info.GetAttrOrDefault<int64_t>("blk_quant_type", static_cast<int64_t>(1));
+    blk_quant_type_ = t == 0 ? BlkQ4Sym : BlkQ4Zp8;
+  }
 
   Status Compute(OpKernelContext* context) const override;
+  MLAS_BLK_QUANT_TYPE blk_quant_type_{BlkQ4Zp8};
 };
 
 Status MatMulFpQ4::Compute(OpKernelContext* ctx) const {
@@ -45,7 +49,9 @@ Status MatMulFpQ4::Compute(OpKernelContext* ctx) const {
   const size_t K = static_cast<size_t>(helper.K());
   const size_t lda = helper.Lda(false);
 
-  ORT_ENFORCE((size_t)blob_len == MlasQ4GemmPackBSize(N, K), "Quantized and packed blob size differ from expected!");
+  ORT_ENFORCE(
+      (size_t)blob_len == MlasQ4GemmPackBSize(blk_quant_type_, N, K),
+      "Quantized and packed blob size differ from expected!");
 
   Tensor* y = ctx->Output(0, helper.OutputShape());
 
@@ -62,7 +68,7 @@ Status MatMulFpQ4::Compute(OpKernelContext* ctx) const {
   auto b_data_ptr = alloc->Alloc(SafeInt<size_t>(K) * N * sizeof(float));
   BufferUniquePtr b_data_buffer(b_data_ptr, BufferDeleter(std::move(alloc)));
   auto* b_data = static_cast<float*>(b_data_buffer.get());
-  MlasQ4GemmUnPackB(b_data, blob_data, N, K, N);
+  MlasQ4GemmUnPackB(blk_quant_type_, b_data, blob_data, N, K, N);
 
   std::vector<MLAS_SGEMM_DATA_PARAMS> data(max_len);
   for (size_t i = 0; i < max_len; i++) {

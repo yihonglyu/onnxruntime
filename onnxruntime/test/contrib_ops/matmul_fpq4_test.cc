@@ -21,8 +21,9 @@
 namespace onnxruntime {
 namespace test {
 
-TEST(MatMulFpQ4, MatMul2D) {
+TEST(MatMulFpQ4, MatMul2DSym) {
   OpTester test("MatMulFpQ4", 1, kMSDomain);
+  test.AddAttribute<int64_t>("blk_quant_type", BlkQ4Sym);
 
   // (100 x 41) X (41 x 288)
   const int64_t M = 100;
@@ -40,15 +41,65 @@ TEST(MatMulFpQ4, MatMul2D) {
   }
 
   std::vector<float> input1_f_vals(N * K);
-  uint8_t v = 0;
+  int v = -8;
+  for (size_t i = 0; i < N * K; i++) {
+    input1_f_vals[i] = (float)v;
+    if (++v >= 8) {
+      v = -8;
+    }
+  }
+  std::vector<uint8_t> input1_vals(MlasQ4GemmPackBSize(BlkQ4Sym, (size_t)N, (size_t)K));
+  MlasQ4GemmPackB(BlkQ4Sym, input1_vals.data(), input1_f_vals.data(), (size_t)N, (size_t)K, (size_t)N);
+
+  std::vector<float> expected_vals(M * N);
+  for (int64_t m = 0; m < M; m++) {
+    for (int64_t n = 0; n < N; n++) {
+      float sum = 0.0f;
+      for (int64_t k = 0; k < K; k++) {
+        sum += input0_vals[m * K + k] * input1_f_vals[k * N + n];
+      }
+      expected_vals[m * N + n] = sum;
+    }
+  }
+
+  test.AddInput<float>("A", {M, K}, input0_vals, false);
+  test.AddInput<uint8_t>("B", {(int64_t)input1_vals.size()}, input1_vals, true);
+  test.AddInput<int64_t>("B_shape", {(int64_t)2}, {(int64_t)K, (int64_t)N}, true);
+
+  test.AddOutput<float>("Y", {M, N}, expected_vals);
+
+  test.Run();
+}
+
+TEST(MatMulFpQ4, MatMul2DBlkZp) {
+  OpTester test("MatMulFpQ4", 1, kMSDomain);
+  test.AddAttribute<int64_t>("blk_quant_type", BlkQ4Zp8);
+
+  // (100 x 41) X (41 x 288)
+  const int64_t M = 100;
+  const int64_t N = 288;
+  const int64_t K = 41;
+
+  std::vector<float> input0_vals(M * K);
+  float fv = -135.f;
+  for (auto& f : input0_vals) {
+    f = fv / 128;
+    fv++;
+    if (fv > 135.f) {
+      fv = -135.f;
+    }
+  }
+
+  std::vector<float> input1_f_vals(N * K);
+  int v = 0;
   for (size_t i = 0; i < N * K; i++) {
     input1_f_vals[i] = (float)v;
     if (++v >= 16) {
       v = 0;
     }
   }
-  std::vector<uint8_t> input1_vals(MlasQ4GemmPackBSize((size_t)N, (size_t)K));
-  MlasQ4GemmPackB(input1_vals.data(), input1_f_vals.data(), (size_t)N, (size_t)K, (size_t)N);
+  std::vector<uint8_t> input1_vals(MlasQ4GemmPackBSize(BlkQ4Zp8, (size_t)N, (size_t)K));
+  MlasQ4GemmPackB(BlkQ4Zp8, input1_vals.data(), input1_f_vals.data(), (size_t)N, (size_t)K, (size_t)N);
 
   std::vector<float> expected_vals(M * N);
   for (int64_t m = 0; m < M; m++) {
