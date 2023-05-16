@@ -1689,27 +1689,38 @@ Matrix product that behaves like numpy.matmul: https://docs.scipy.org/doc/numpy-
                                   ONNX_NAMESPACE::matmulShapeInference(ctx, 0, 1);
                                 }));
 
-
-static void matmulQ4ShapeInference(ONNX_NAMESPACE::InferenceContext& ctx, int input1Idx, int input2Idx, int input2shape) {
-  const auto shape0 = ctx.getInputType(input1Idx)->tensor_type().shape();
-  const auto shape1 = ctx.getInputType(input2Idx)->tensor_type().shape();
-  const auto shape_shape = ctx.getInputType(input2shape)->tensor_type().shape();
-  if (shape_shape.dim_size() != 1 && shape_shape.dim(0).dim_value() != 2) {
-    fail_shape_inference("B_shape tensor must indicate a 2-D matrix!");
+/**
+ * @brief Shape inference for MatMul with right hand side matrix quantized into int4
+ * @param ctx
+ * @param input_a_idx         points to the left hand size matrix input
+ * @param input_b_idx         points to the quantized right hand side matrix
+ * @param input_bshape_idx    points to the shape tensor of the right hand side matrix
+ */
+static void matmulQ4ShapeInference(ONNX_NAMESPACE::InferenceContext& ctx, int input_a_idx, int input_b_idx, int input_bshape_idx) {
+  if (!hasInputShape(ctx, input_a_idx) || !hasInputShape(ctx, input_b_idx)) {
+    return;
   }
-  const TensorProto* shape1Data = ctx.getInputData(input2shape);
-  if (nullptr == shape1Data) {
+
+  const auto& a_shape = ctx.getInputType(input_a_idx)->tensor_type().shape();
+  if (a_shape.dim_size() == 0) {
+    fail_shape_inference("Input tensors of wrong rank (0).");
+  }
+
+  const auto& blob_shape = ctx.getInputType(input_b_idx)->tensor_type().shape();
+  const auto& shape_shape = ctx.getInputType(input_bshape_idx)->tensor_type().shape();
+  if (shape_shape.dim_size() != 1 && shape_shape.dim(0).dim_value() != 2) {
+    fail_shape_inference("B input for MatMul must be a 2-D matrix!");
+  }
+
+  const TensorProto* b_shape_tensor = ctx.getInputData(input_bshape_idx);
+  if (nullptr == b_shape_tensor) {
     // Can't find shape info, quiting
     return;
   }
 
-  if (shape0.dim_size() == 0) {
-    fail_shape_inference("Input tensors of wrong rank (0).");
-  }
-
   ONNX_NAMESPACE::TensorShapeProto shapeL, shapeR;
 
-  const int64_t* shape_r_data = reinterpret_cast<const int64_t*>(shape1Data->raw_data().data());
+  const int64_t* shape_r_data = reinterpret_cast<const int64_t*>(b_shape_tensor->raw_data().data());
   for (int d = 0; d < 2; d++) {
     shapeR.add_dim()->set_dim_value(shape_r_data[d]);
   }
@@ -1717,25 +1728,25 @@ static void matmulQ4ShapeInference(ONNX_NAMESPACE::InferenceContext& ctx, int in
   // First promote each shape to at least rank-2. This logic is
   // specific to matmul, not generic broadcasting.
   {
-    if (shape0.dim_size() == 1) {
+    if (a_shape.dim_size() == 1) {
       shapeL.add_dim()->set_dim_value(1);
-      *shapeL.add_dim() = shape0.dim(0);
+      *shapeL.add_dim() = a_shape.dim(0);
     } else {
-      *shapeL.mutable_dim() = shape0.dim();
+      *shapeL.mutable_dim() = a_shape.dim();
     }
   }
 
   size_t expectedPackSize = MlasQ4GemmPackBSize(
       shapeR.dim(shapeR.dim_size() - 1).dim_value(),
       shapeR.dim(shapeR.dim_size() - 2).dim_value());
-  if (shape1.dim_size() != 1 && (size_t)shape1.dim(0).dim_value() != expectedPackSize) {
+  if (blob_shape.dim_size() != 1 && (size_t)blob_shape.dim(0).dim_value() != expectedPackSize) {
     fail_shape_inference("Input q4 tensors of wrong size!");
   }
 
   // Check for compatible matrix multiply dimensions
   {
-    auto dimL = shapeL.dim(shapeL.dim_size() - 1);
-    auto dimR = shapeR.dim(shapeR.dim_size() - 2);
+    const auto& dimL = shapeL.dim(shapeL.dim_size() - 1);
+    const auto& dimR = shapeR.dim(shapeR.dim_size() - 2);
     if (dimL.has_dim_value() && dimR.has_dim_value() && dimL.dim_value() != dimR.dim_value()) {
       fail_shape_inference("Incompatible dimensions for matrix multiplication");
     }
@@ -1758,7 +1769,7 @@ static void matmulQ4ShapeInference(ONNX_NAMESPACE::InferenceContext& ctx, int in
 
   // Back to matmul-specific. Add the trailing dimensions back in.
   {
-    if (shape0.dim_size() != 1) {
+    if (a_shape.dim_size() != 1) {
       *resultShape.add_dim() = shapeL.dim(shapeL.dim_size() - 2);
     }
     *resultShape.add_dim() = shapeR.dim(shapeR.dim_size() - 1);
@@ -1791,10 +1802,7 @@ Matrix product with right hand matrix being pre-packed and quantized int4 data b
                                         "inputs are expected to have tensor type and output type should not be null.");
                                   }
 
-                                  // Right now we only support int32
                                   y_type->mutable_tensor_type()->set_elem_type(ONNX_NAMESPACE::TensorProto::FLOAT);
-
-                                  const auto shapeshape = b_shape_type->tensor_type().shape();
 
                                   matmulQ4ShapeInference(ctx, 0, 1, 2);
                                 }));

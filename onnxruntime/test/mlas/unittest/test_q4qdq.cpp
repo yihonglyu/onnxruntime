@@ -59,4 +59,3 @@ static UNUSED_VARIABLE bool added_to_main = AddTestRegister([](bool is_short_exe
   }
   return count;
 });
-

@@ -7,6 +7,7 @@ import numpy
 import onnx
 from onnx import external_data_helper
 from onnx import onnx_pb as onnx_proto
+from onnx.onnx_pb import ModelProto
 
 from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 
@@ -545,7 +546,7 @@ def model_has_infer_metadata(model):
     return False
 
 
-def load_model_with_shape_infer(model_path: Path):
+def load_model_with_shape_infer(model_path: Path) -> ModelProto:
     inferred_model_path = generate_identified_filename(model_path, "-inferred")
     onnx.shape_inference.infer_shapes_path(str(model_path), str(inferred_model_path))
     model = onnx.load(inferred_model_path.as_posix())
@@ -553,7 +554,7 @@ def load_model_with_shape_infer(model_path: Path):
     return model
 
 
-def load_model(model_path: Path, need_optimize: bool):
+def load_model(model_path: Path, need_optimize: bool) -> ModelProto:
     with tempfile.TemporaryDirectory(prefix="ort.quant.") as quant_tmp_dir:
         if need_optimize and not model_has_external_data(model_path):
             opt_model_path = Path(quant_tmp_dir).joinpath("model.onnx")

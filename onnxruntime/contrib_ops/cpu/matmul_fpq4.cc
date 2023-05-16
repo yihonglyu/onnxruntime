@@ -59,7 +59,7 @@ Status MatMulFpQ4::Compute(OpKernelContext* ctx) const {
 
   AllocatorPtr alloc;
   ORT_RETURN_IF_ERROR(ctx->GetTempSpaceAllocator(&alloc));
-  auto b_data_ptr = alloc->Alloc(SafeInt<size_t>(M) * N * sizeof(float));
+  auto b_data_ptr = alloc->Alloc(SafeInt<size_t>(K) * N * sizeof(float));
   BufferUniquePtr b_data_buffer(b_data_ptr, BufferDeleter(std::move(alloc)));
   auto* b_data = static_cast<float*>(b_data_buffer.get());
   MlasQ4GemmUnPackB(b_data, blob_data, N, K, N);

@@ -39,7 +39,6 @@ TEST(MatMulFpQ4, MatMul2D) {
     }
   }
 
-
   std::vector<float> input1_f_vals(N * K);
   uint8_t v = 0;
   for (size_t i = 0; i < N * K; i++) {
@@ -71,5 +70,5 @@ TEST(MatMulFpQ4, MatMul2D) {
   test.Run();
 }
 
-}
-}
+}  // namespace test
+}  // namespace onnxruntime
