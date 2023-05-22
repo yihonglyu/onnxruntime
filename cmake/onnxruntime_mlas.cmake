@@ -15,8 +15,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_GRE
     )
     # 2.38 or later
     if (_as_version MATCHES "GNU.[Aa]ssembler.*(2\\.38|2\\.39|2\\.[4-9][0-9]|[3-9]\\.[0-9][0-9])")
-        set(MLAS_AMX_SUPPORTED TRUE)
-    endif()
+  set(MLAS_AMX_SUPPORTED TRUE)
+endif()
   endif()
 endif()
 
@@ -36,6 +36,7 @@ onnxruntime_add_static_library(onnxruntime_mlas
   ${MLAS_SRC_DIR}/sgemm.cpp
   ${MLAS_SRC_DIR}/halfgemm.cpp
   ${MLAS_SRC_DIR}/q4_dq.cpp
+  ${MLAS_SRC_DIR}/q4gemm.cpp
   ${MLAS_SRC_DIR}/qgemm.cpp
   ${MLAS_SRC_DIR}/qdwconv.cpp
   ${MLAS_SRC_DIR}/convolve.cpp
