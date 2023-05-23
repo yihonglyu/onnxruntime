@@ -80,14 +80,15 @@ MlasQ4GemmPackBImpl<MLAS_Q4TYPE_BLK0>(
                 MlasQ4BlkScale<MLAS_Q4TYPE_BLK0>(dst_ptr) = scale;
                 uint8_t* data = MlasQ4BlkData<MLAS_Q4TYPE_BLK0>(dst_ptr);
 
-                for (size_t l = 0; l < MLAS_Q4TYPE_BLK0::BlkLen; l += 2) {
+                for (size_t l = 0; l < MLAS_Q4TYPE_BLK0::BlkLen / 2; l++) {
                     const float v0 = l < klen ? src[ldb * l] * reciprocal_scale : 0;
-
                     const uint8_t vi0 = (uint8_t)std::min(15.0f, std::max(0.0f, v0 + 8.5f));
-                    const float v1 = (l + 1 < klen) ? src[ldb * (l + 1)] * reciprocal_scale : 0;
+
+                    const size_t l1 = l + MLAS_Q4TYPE_BLK0::BlkLen / 2;
+                    const float v1 = (l1 < klen) ? src[ldb * l1] * reciprocal_scale : 0;
                     const uint8_t vi1 = (uint8_t)std::min(15.0f, std::max(0.0f, v1 + 8.5f));
 
-                    data[l / 2] = vi0 | (vi1 << 4);
+                    data[l] = vi0 | (vi1 << 4);
                 }
                 dst_ptr += MLAS_Q4TYPE_BLK0::BlobSize;
                 src++;  // mov to next column
@@ -147,15 +148,17 @@ MlasQ4GemmPackBImpl<MLAS_Q4TYPE_BLK1>(
                 MlasQ4BlkScale<MLAS_Q4TYPE_BLK1>(dst_ptr) = scale;
                 uint8_t* data = MlasQ4BlkData<MLAS_Q4TYPE_BLK1>(dst_ptr);
 
-                for (size_t l = 0; l < MLAS_Q4TYPE_BLK1::BlkLen; l += 2) {
+                for (size_t l = 0; l < MLAS_Q4TYPE_BLK1::BlkLen / 2; l++) {
                     const float v0 = l < klen ? src[ldb * l] : 0;
                     const uint8_t vi0 = (uint8_t)std::min(
                         15.0f, std::max(0.0f, roundf(v0 * reciprocal_scale + zp)));
-                    const float v1 = (l + 1 < klen) ? src[ldb * (l + 1)] : 0;
+
+                    const size_t l1 = l + MLAS_Q4TYPE_BLK1::BlkLen / 2;
+                    const float v1 = (l1 < klen) ? src[ldb * l1] : 0;
                     const uint8_t vi1 = (uint8_t)std::min(
                         15.0f, std::max(0.0f, roundf(v1 * reciprocal_scale + zp)));
 
-                    data[l / 2] = vi0 | (vi1 << 4);
+                    data[l] = vi0 | (vi1 << 4);
                 }
                 dst_ptr += MLAS_Q4TYPE_BLK1::BlobSize;
                 src++;  // mov to next column
@@ -208,18 +211,20 @@ MlasQ4GemmUnPackBImpl<MLAS_Q4TYPE_BLK0>(
                 const float s = MlasQ4BlkScale<MLAS_Q4TYPE_BLK0>(src);
                 const uint8_t* pp = MlasQ4BlkData<MLAS_Q4TYPE_BLK0>(src);
 
-                for (size_t l = 0; l < CountK; l += 2) {
-                    const uint8_t vi = pp[l / 2];
+                for (size_t l = 0; l < MLAS_Q4TYPE_BLK0::BlkLen / 2; l++) {
+                    const uint8_t vi = pp[l];
 
-                    const int vi0 = (vi & 0x0F) - 8;
-                    const int vi1 = (vi >> 4) - 8;
+                    if (l < CountK) {
+                        const int vi0 = (vi & 0x0F) - 8;
+                        const float v0 = vi0 * s;
+                        dest[ldb * l] = v0;
+                    }
 
-                    const float v0 = vi0 * s;
-                    const float v1 = vi1 * s;
-
-                    dest[ldb * l] = v0;
-                    if (l + 1 < CountK) {
-                        dest[ldb * (l + 1)] = v1;
+                    const size_t l1 = l + MLAS_Q4TYPE_BLK0::BlkLen / 2;
+                    if (l1 < CountK) {
+                        const int vi1 = (vi >> 4) - 8;
+                        const float v1 = vi1 * s;
+                        dest[ldb * l1] = v1;
                     }
                 }
                 src += MLAS_Q4TYPE_BLK0::BlobSize;
@@ -248,18 +253,20 @@ MlasQ4GemmUnPackBImpl<MLAS_Q4TYPE_BLK1>(
                 const uint8_t z = MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(src);
                 const uint8_t* pp = MlasQ4BlkData<MLAS_Q4TYPE_BLK1>(src);
 
-                for (size_t l = 0; l < CountK; l += 2) {
-                    const uint8_t vi = pp[l / 2];
+                for (size_t l = 0; l < MLAS_Q4TYPE_BLK1::BlkLen / 2; l++) {
+                    const uint8_t vi = pp[l];
 
-                    const int8_t vi0 = vi & 0x0F;
-                    const int8_t vi1 = vi >> 4;
+                    if (l < CountK) {
+                        const int8_t vi0 = vi & 0x0F;
+                        const float v0 = (vi0 - z) * s;
+                        dest[ldb * l] = v0;
+                    }
 
-                    const float v0 = (vi0 - z) * s;
-                    const float v1 = (vi1 - z) * s;
-
-                    dest[ldb * l] = v0;
-                    if (l + 1 < CountK) {
-                        dest[ldb * (l + 1)] = v1;
+                    size_t l1 = l + MLAS_Q4TYPE_BLK1::BlkLen / 2;
+                    if (l1 < CountK) {
+                        const int8_t vi1 = vi >> 4;
+                        const float v1 = (vi1 - z) * s;
+                        dest[ldb * l1] = v1;
                     }
                 }
                 src += MLAS_Q4TYPE_BLK1::BlobSize;

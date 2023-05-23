@@ -19,6 +19,20 @@ Abstract:
 #include "test_util.h"
 #include "mlas_q4.h"
 
+inline bool
+CloseEnough(float actual, float expected) {
+  if (std::isnan(actual)) {
+    return std::isnan(expected);
+  }
+  float diff = std::abs(actual - expected);
+  float top = std::max(std::abs(actual), std::abs(expected));
+  float ratio = 0;
+  if (top > 0.0001) {
+    ratio = diff / top;
+  }
+  return ratio < 0.005;
+}
+
 /**
  * @brief Test class for int4 block quantized GEMM
  *        Note: only 2-D matmul supported for now
@@ -121,8 +135,9 @@ class MlasQ4GemmTest : public MlasTestBase {
     size_t f = 0;
       for (size_t m = 0; m < M; m++) {
         for (size_t n = 0; n < N; n++, f++) {
-        ASSERT_EQ(C[f], CReference[f]) << "@[" << m << "x" << n << "], "
-                                       << "M=" << M << ", N=" << N << ", K=" << K;
+        ASSERT_TRUE(CloseEnough(C[f], CReference[f]))
+            << "Expected: " << CReference[f] << " Actual: " << C[f] <<  "@[" << m << "x" << n << "], "
+            << "M=" << M << ", N=" << N << ", K=" << K;
         }
       }
   }
