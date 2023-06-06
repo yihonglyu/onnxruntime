@@ -29,8 +29,9 @@ Abstract:
  * @brief Define types of block quantization
  */
 typedef enum {
-    BlkQ4Sym = 0,  /*!< int4 Symmetric Block Quantization, zero_point = 0 */
-    BlkQ4Zp8 = 1   /*!< int4 Block Quantization, zero_point is int8 type */
+    BlkQ4Sym = 0,   /*!< int4 Symmetric Block Quantization, zero_point = 0 */
+    BlkQ4Zp8 = 1,   /*!< int4 Block Quantization, zero_point is int8 type */
+    BlkQ4Sym64 = 2  /*!< int4 Symmetric Block Quantization, 64 values per block*/
 }MLAS_BLK_QUANT_TYPE;
 
 /**
@@ -154,17 +155,19 @@ MlasQ4GemmBatch(
 
 /**
  * @brief Calculate the buffer size needed for int8 block quantize
- * @param M   Number of rows of the input matrix
- * @param K   Number of columns of the input matrix
+ * @param[in]  QType   Type of block quantization used
+ * @param[in]  M       Number of rows of the input matrix
+ * @param[in]  K       Number of columns of the input matrix
  * @return    buffer size (in bytes) needed
 */
 size_t
 MLASCALL
-MlasQ80BlkQuantSize(size_t M, size_t K);
+MlasQ80BlkQuantSize(MLAS_BLK_QUANT_TYPE QType, size_t M, size_t K);
 
 /**
  * @brief Given an input float 2-D matrix, perform blocked int8 quantize
  *
+ * @param QType     Type of block quantization used
  * @param Qblob     Pointer to the output buffer
  * @param A         Pointer to the float matrix
  * @param M         Number of rows of the input matrix
@@ -175,6 +178,7 @@ MlasQ80BlkQuantSize(size_t M, size_t K);
 void
 MLASCALL
 MlasQ80BlkQuant(
+    MLAS_BLK_QUANT_TYPE QType,
     void* Qblob,
     const float* A,
     size_t M,

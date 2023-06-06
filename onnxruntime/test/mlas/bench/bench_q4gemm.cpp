@@ -63,7 +63,7 @@ void Q8Q4GEMM(benchmark::State& state, MLAS_BLK_QUANT_TYPE qtype) {
   const size_t K = static_cast<size_t>(state.range(2));
   const size_t threads = static_cast<size_t>(state.range(3));
   const size_t pack_b_size = MlasQ4GemmPackBSize(qtype, N, K);
-  const size_t quant_a_size = MlasQ80BlkQuantSize(M, K);
+  const size_t quant_a_size = MlasQ80BlkQuantSize(qtype, M, K);
 
   OrtThreadPoolParams tpo;
   tpo.thread_pool_size = int(threads);
@@ -80,7 +80,8 @@ void Q8Q4GEMM(benchmark::State& state, MLAS_BLK_QUANT_TYPE qtype) {
   MlasQ4GemmPackB(qtype, B1_packed.data(), B1.data(), N, K, N);
 
   std::vector<int8_t> A1_quant(quant_a_size);
-  MlasQ80BlkQuant(A1_quant.data(), A1.data(), M, K, K, tp.get());
+
+  MlasQ80BlkQuant(BlkQ4Sym, A1_quant.data(), A1.data(), M, K, K, tp.get());
 
   MLAS_Q8Q4_GEMM_DATA_PARAMS params1;
   params1.A = A1.data();
@@ -93,7 +94,16 @@ void Q8Q4GEMM(benchmark::State& state, MLAS_BLK_QUANT_TYPE qtype) {
   MlasQ8Q4GemmBatch(qtype, M, N, K, 1, &params1, tp.get());
 
   for (auto _ : state) {
-    MlasQ8Q4GemmBatch(qtype, M, N, K, 1, &params1, tp.get());
+    MlasQ80BlkQuant(BlkQ4Sym, A1_quant.data(), A1.data(), M, K, K, tp.get());
+
+    MLAS_Q8Q4_GEMM_DATA_PARAMS params;
+    params.A = A1.data();
+    params.B = B1_packed.data();
+    params.Bias = nullptr;
+    params.C = C1.data();
+    params.ldc = N;
+    params.OutputProcessor = nullptr;
+    MlasQ8Q4GemmBatch(qtype, M, N, K, 1, &params, tp.get());
   }
 }
 

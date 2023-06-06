@@ -4,7 +4,7 @@
 #include "test_util.h"
 #include "mlas_q4.h"
 
-#define QK8_0 32
+#define QK8_0 64
 typedef struct {
   float d;     // delta
   int8_t qs[QK8_0];  // quants
@@ -81,11 +81,11 @@ class MlasBlkQ8Test : public MlasTestBase {
   void Test(size_t M, size_t K) {
     float* Input = FpInputBuf.GetBuffer(M * K);
 
-    const size_t qsize = MlasQ80BlkQuantSize(M, K);
+    const size_t qsize = MlasQ80BlkQuantSize(BlkQ4Sym64, M, K);
     int8_t* Packed = PackedBuf.GetBuffer(qsize, true);
     int8_t* Ref = ReferenceBuf.GetBuffer(qsize, true);
 
-    MlasQ80BlkQuant(Packed, Input, M, K, K, threadpool_);
+    MlasQ80BlkQuant(BlkQ4Sym64, Packed, Input, M, K, K, threadpool_);
     quantize_reference(Input, Ref, M, K);
 
     for (size_t i = 0; i < qsize; i++) {
@@ -131,11 +131,14 @@ class MlasBlkQ8ShortExeTest : public MlasTestFixture<MlasBlkQ8Test<Threaded>> {
   static size_t RegisterShortExecuteTests() {
     size_t test_registered = 0;
 
+    test_registered += RegisterSingleTest(1, 13);
     test_registered += RegisterSingleTest(1, 20);
     test_registered += RegisterSingleTest(1, 52);
+    test_registered += RegisterSingleTest(1, 70);
+    test_registered += RegisterSingleTest(3, 13);
     test_registered += RegisterSingleTest(3, 20);
-    test_registered += RegisterSingleTest(3, 32);
     test_registered += RegisterSingleTest(3, 52);
+    test_registered += RegisterSingleTest(3, 70);
     test_registered += RegisterSingleTest(41, 305);
     test_registered += RegisterSingleTest(83, 497);
 

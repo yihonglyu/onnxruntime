@@ -92,12 +92,12 @@ class MlasQ8Q4GemmTest : public MlasTestBase {
   }
 
   int8_t* QuantizeA(size_t M, size_t K, const float* A, size_t lda) {
-    size_t bufsize = MlasQ80BlkQuantSize(M, K);
+    size_t bufsize = MlasQ80BlkQuantSize(QType, M, K);
     if (bufsize == 0) {
       return nullptr;
     }
     auto* QuantA = BufferAQuant.GetBuffer(bufsize);
-    MlasQ80BlkQuant(QuantA, A, M, K, lda, threadpool_);
+    MlasQ80BlkQuant(QType, QuantA, A, M, K, lda, threadpool_);
     return QuantA;
   }
 

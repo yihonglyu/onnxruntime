@@ -152,6 +152,46 @@ MlasQ4BlkData<MLAS_Q4TYPE_BLK1>(const uint8_t* BlkPtr)
 }
 
 
+/**
+ * @brief Representing int4 quantize type, block quant type 2:
+ *
+ * Block size 64, use 64 fp32 numbers to find quantization parameter:
+ * scale (fp 32) and no zero point, then quantize the numbers
+ * into int4. The resulting blob takes 32 + 4 = 36 bytes.
+ */
+struct MLAS_Q4TYPE_BLK2 {
+    static constexpr size_t BlkLen = 64;
+    static constexpr size_t BlobSize = BlkLen / 2 + sizeof(float);
+};
+
+template <>
+inline float&
+MlasQ4BlkScale<MLAS_Q4TYPE_BLK2>(uint8_t* BlkPtr)
+{
+    return *reinterpret_cast<float*>(BlkPtr);
+}
+
+template <>
+inline float
+MlasQ4BlkScale<MLAS_Q4TYPE_BLK2>(const uint8_t* BlkPtr)
+{
+    return *reinterpret_cast<const float*>(BlkPtr);
+}
+
+template <>
+inline uint8_t*
+MlasQ4BlkData<MLAS_Q4TYPE_BLK2>(uint8_t* BlkPtr)
+{
+    return BlkPtr + sizeof(float);
+}
+
+template <>
+inline const uint8_t*
+MlasQ4BlkData<MLAS_Q4TYPE_BLK2>(const uint8_t* BlkPtr)
+{
+    return BlkPtr + sizeof(float);
+}
+
 //
 // Quantization and Packing
 //

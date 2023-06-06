@@ -408,31 +408,32 @@ MlasQ4GemmOperation(
     }
 }
 
-/**
- * @brief Blockwise q-int8. A block is 32 fp32 values, result quantized
- * blob has a fp32 scale, with 32 int8 values
-*/
-constexpr size_t MLAS_BLKQ80_SIZE = sizeof(float) + MLAS_QUANT4_BLK_LEN;
+/////////////////////////////////////////////////////////
+//  Block int8 quantization, currently we only
+//  implement symmetric quant, with no zero-point
 
-static inline void
+template<typename QType>
+MLAS_FORCEINLINE
+void
 MlasQ80BlkQuantRow(const float* A, void* Qblob, size_t size)
 {
+    static_assert((typename QType::BlkLen) % 16 == 0);
+    const __m512 signBit = _mm512_set1_ps(-0.0f);
     int8_t* blob = reinterpret_cast<int8_t*>(Qblob);
-    for (size_t k = 0; k < size; k += MLAS_QUANT4_BLK_LEN) {
-        size_t klen = std::min(MLAS_QUANT4_BLK_LEN, size - k);
+    for (size_t k = 0; k < size; k += (typename QType::BlkLen)) {
+        const size_t step = std::min((typename QType::BlkLen), size - k);
 
-        // Load elements into vectors
-        uint32_t mask = 0xffffffff >> (MLAS_QUANT4_BLK_LEN - klen);
-        __m512 v0 = _mm512_maskz_loadu_ps(__mmask16(mask), A + k);
+        __m512 maxAbs = _mm512_setzero();
+        for (size_t kk = 0; kk < step; kk += 16) {
+            const size_t klen = std::min(size_t(16), step - kk);
+ 
+            uint32_t mask = 0xffff >> (16 - klen);
+            __m512 v0 = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + kk);
 
-        mask = mask >> 16;
-        __m512 v1 =
-            mask == 0 ? _mm512_setzero_ps() : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + 16);
+            // Compute max(abs(e)) for the block
+            maxAbs = _mm512_max_ps(maxAbs, _mm512_andnot_ps(signBit, v0));
+        }
 
-        // Compute max(abs(e)) for the block
-        const __m512 signBit = _mm512_set1_ps(-0.0f);
-        __m512 maxAbs = _mm512_andnot_ps(signBit, v0);
-        maxAbs = _mm512_max_ps(maxAbs, _mm512_andnot_ps(signBit, v1));
         __m256 max8 =
             _mm256_max_ps(_mm512_extractf32x8_ps(maxAbs, 1), _mm512_extractf32x8_ps(maxAbs, 0));
         __m128 max4 = _mm_max_ps(_mm256_extractf128_ps(max8, 1), _mm256_castps256_ps128(max8));
@@ -447,52 +448,78 @@ MlasQ80BlkQuantRow(const float* A, void* Qblob, size_t size)
 
         const float inverse_scale = (maxScalar != 0.0f) ? 127.f / maxScalar : 0.0f;
         const __m512 mul = _mm512_set1_ps(inverse_scale);
-        v0 = _mm512_mul_ps(v0, mul);
-        v1 = _mm512_mul_ps(v1, mul);
-
-        // Round to nearest integer
-        v0 = _mm512_roundscale_ps(v0, _MM_ROUND_NEAREST);
-        v1 = _mm512_roundscale_ps(v1, _MM_ROUND_NEAREST);
-
-        // Convert floats to integers
-        __m512i i0 = _mm512_cvtps_epi32(v0);
-        __m512i i1 = _mm512_cvtps_epi32(v1);
-
-        // Convert int32 to int8
         __m128i* dst = reinterpret_cast<__m128i*>(blob);
-        _mm_storeu_si128(dst, _mm512_cvtepi32_epi8(i0));
-        _mm_storeu_si128(dst + 1, _mm512_cvtepi32_epi8(i1));
-        blob += MLAS_QUANT4_BLK_LEN;
+
+        for (size_t kk = 0; kk < step; kk += 16) {
+            const size_t klen = std::min(size_t(16), step - kk);
+
+            uint32_t mask = 0xffff >> (16 - klen);
+            __m512 v0 = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + kk);
+            v0 = _mm512_mul_ps(v0, mul);
+
+            // Round to nearest integer
+            v0 = _mm512_roundscale_ps(v0, _MM_ROUND_NEAREST);
+
+            // Convert floats to integers
+            __m512i i0 = _mm512_cvtps_epi32(v0);
+
+            // Convert int32 to int8
+            _mm_storeu_si128(dst++, _mm512_cvtepi32_epi8(i0));
+        }
+        if (step < (typename QType::BlkLen)) {
+            memset(blob + step, 0, (typename QType::BlkLen) - step);
+        }
+        blob += (typename QType::BlkLen);
     }
 }
 
+/**
+ * @brief Compute the size of a quantized block, one byte per value + fp32 scale
+ * @tparam QType 
+ * @return 
+*/
+template<typename QType>
+constexpr size_t
+Q8BlobUnitSize()
+{
+    return (QType::BlkLen + sizeof(float));
+}
 
+template<typename QType>
 MLAS_FORCEINLINE
 size_t
 MlasQ80BlkQuantSizeImpl(size_t M, size_t K)
 {
-    const size_t KBlocks = MlasDivRoundup(K, MLAS_QUANT4_BLK_LEN);
+    const size_t KBlocks = MlasDivRoundup(K, QType::BlkLen);
 
     const size_t NumBlocks = M * KBlocks;
 
-    return NumBlocks * MLAS_BLKQ80_SIZE;
+    return NumBlocks * Q8BlobUnitSize<QType>();
 }
 
 size_t
 MLASCALL
-MlasQ80BlkQuantSize(size_t M, size_t K)
+MlasQ80BlkQuantSize(MLAS_BLK_QUANT_TYPE QType, size_t M, size_t K)
 {
-    return MlasQ80BlkQuantSizeImpl(M, K);
+    switch (QType) {
+        case BlkQ4Zp8:
+            return MlasQ80BlkQuantSizeImpl<MLAS_Q4TYPE_BLK1>(M, K);
+        case BlkQ4Sym64:
+            return MlasQ80BlkQuantSizeImpl<MLAS_Q4TYPE_BLK2>(M, K);
+        default:
+            return MlasQ80BlkQuantSizeImpl<MLAS_Q4TYPE_BLK0>(M, K);
+    }
 }
 
+template<typename QType>
+MLAS_FORCEINLINE
 void
-MLASCALL
-MlasQ80BlkQuant(void* Qblob, const float* A, size_t M, size_t K, size_t lda, MLAS_THREADPOOL* ThreadPool)
+Q80BlkQuant(void* Qblob, const float* A, size_t M, size_t K, size_t lda, MLAS_THREADPOOL* ThreadPool)
 {
     const size_t parts = (size_t)ceil(double(M) * K / (16.0 * 1024));
     const size_t TargetThreadCnt =
         std::max(std::min(parts, (size_t)MlasGetMaximumThreadCount(ThreadPool)), (size_t)1);
-    const size_t linesize = MlasQ80BlkQuantSizeImpl(1, K);
+    const size_t linesize = MlasQ80BlkQuantSizeImpl<QType>(1, K);
 
     size_t M_stride = MlasDivRoundup(M, TargetThreadCnt);
     size_t threads = MlasDivRoundup(M, M_stride);
@@ -501,12 +528,35 @@ MlasQ80BlkQuant(void* Qblob, const float* A, size_t M, size_t K, size_t lda, MLA
         const float* src = A + lda * m;
         uint8_t* dst = reinterpret_cast<uint8_t*>(Qblob) + m * linesize;
         for (size_t i = 0; i < std::min(M_stride, M-m); i++) {
-            MlasQ80BlkQuantRow(src, dst, K);
+            MlasQ80BlkQuantRow<QType>(src, dst, K);
             src += lda;
             dst += linesize;
         }
     });
 }
+
+void
+MLASCALL
+MlasQ80BlkQuant(
+    MLAS_BLK_QUANT_TYPE QType,
+    void* Qblob,
+    const float* A,
+    size_t M,
+    size_t K,
+    size_t lda,
+    MLAS_THREADPOOL* ThreadPool
+    )
+{
+    switch (QType) {
+        case BlkQ4Zp8:
+            return Q80BlkQuant<MLAS_Q4TYPE_BLK1>(Qblob, A, M, K, lda, ThreadPool);
+        case BlkQ4Sym64:
+            return Q80BlkQuant<MLAS_Q4TYPE_BLK2>(Qblob, A, M, K, lda, ThreadPool);
+        default:
+            return Q80BlkQuant<MLAS_Q4TYPE_BLK0>(Qblob, A, M, K, lda, ThreadPool);
+    }
+}
+
 
 
 static inline float
@@ -767,7 +817,7 @@ MlasQ8Q4GemmOperation(
 )
 {
     const size_t k_blks = MlasDivRoundup(K, (typename Q4TYPE::BlkLen));
-    const size_t lda = k_blks * MLAS_BLKQ80_SIZE;
+    const size_t lda = k_blks * Q8BlobUnitSize<Q4TYPE>();
     const size_t ldc = DataParams->ldc;
 
     const int8_t* A = reinterpret_cast<const int8_t*>(DataParams->A) + RangeStartM * lda;
