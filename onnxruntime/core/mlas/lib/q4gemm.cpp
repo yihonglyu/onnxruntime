@@ -354,6 +354,552 @@ MlasQ4GemmKernel<MLAS_Q4TYPE_BLK0, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
 }
 
 
+
+template<typename Q4Type>
+MLAS_FORCEINLINE
+void
+MlasQ4DequantAvx512f(size_t CountN, size_t CountK, const uint8_t* PackedB, float* DequantB)
+{
+    const __m256i lowMask = _mm256_set1_epi8(0xF);
+    const uint8_t* b = PackedB;
+    int64_t nblk = (int64_t)(CountN) - MLAS_Q4_N_STRIDE;
+
+    while (nblk >= 0) {
+        static_assert(MLAS_Q4_N_STRIDE == 4);
+
+        for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+
+            // Load 4 B column vectors (quantized to int4 blobs)
+            const __m512 scale_v0 = _mm512_set1_ps(MlasQ4BlkScale<Q4Type>(b));
+            uint8_t zp0 = 8;
+            if constexpr (std::is_same_v<Q4Type, MLAS_Q4TYPE_BLK1>)
+                zp0 = MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(b);
+            const __m128i bvi4_0 = _mm_loadu_si128((const __m128i*)MlasQ4BlkData<Q4Type>(b));
+            b += Q4Type::BlobSize;
+
+            const __m512 scale_v1 = _mm512_set1_ps(MlasQ4BlkScale<Q4Type>(b));
+            uint8_t zp1 = 8;
+            if constexpr (std::is_same_v<Q4Type, MLAS_Q4TYPE_BLK1>)
+                zp1 = MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(b);
+            const __m128i bvi4_1 = _mm_loadu_si128((const __m128i*)MlasQ4BlkData<Q4Type>(b));
+            b += Q4Type::BlobSize;
+
+            const __m512 scale_v2 = _mm512_set1_ps(MlasQ4BlkScale<Q4Type>(b));
+            uint8_t zp2 = 8;
+            if constexpr (std::is_same_v<Q4Type, MLAS_Q4TYPE_BLK1>)
+                zp2 = MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(b);
+            const __m128i bvi4_2 = _mm_loadu_si128((const __m128i*)MlasQ4BlkData<Q4Type>(b));
+            b += Q4Type::BlobSize;
+
+            const __m512 scale_v3 = _mm512_set1_ps(MlasQ4BlkScale<Q4Type>(b));
+            uint8_t zp3 = 8;
+            if constexpr (std::is_same_v<Q4Type, MLAS_Q4TYPE_BLK1>)
+                zp3 = MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(b);
+            const __m128i bvi4_3 = _mm_loadu_si128((const __m128i*)MlasQ4BlkData<Q4Type>(b));
+            b += Q4Type::BlobSize;
+
+            // expand 4b into byte array
+            __m256i bytes0 = _mm256_set_m128i(_mm_srli_epi16(bvi4_0, 4), bvi4_0);
+            __m256i bytes1 = _mm256_set_m128i(_mm_srli_epi16(bvi4_1, 4), bvi4_1);
+            __m256i bytes2 = _mm256_set_m128i(_mm_srli_epi16(bvi4_2, 4), bvi4_2);
+            __m256i bytes3 = _mm256_set_m128i(_mm_srli_epi16(bvi4_3, 4), bvi4_3);
+            bytes0 = _mm256_and_si256(lowMask, bytes0);
+            bytes1 = _mm256_and_si256(lowMask, bytes1);
+            bytes2 = _mm256_and_si256(lowMask, bytes2);
+            bytes3 = _mm256_and_si256(lowMask, bytes3);
+
+            // Subtract zero-point from the integers
+            bytes0 = _mm256_sub_epi8(bytes0, _mm256_set1_epi8(zp0));
+            bytes1 = _mm256_sub_epi8(bytes1, _mm256_set1_epi8(zp1));
+            bytes2 = _mm256_sub_epi8(bytes2, _mm256_set1_epi8(zp2));
+            bytes3 = _mm256_sub_epi8(bytes3, _mm256_set1_epi8(zp3));
+
+            // Convert to 16-bit int
+            const __m256i vx16_lo0 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes0, 0));
+            const __m256i vx16_hi0 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes0, 1));
+            const __m256i vx16_lo1 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes1, 0));
+            const __m256i vx16_hi1 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes1, 1));
+            const __m256i vx16_lo2 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes2, 0));
+            const __m256i vx16_hi2 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes2, 1));
+            const __m256i vx16_lo3 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes3, 0));
+            const __m256i vx16_hi3 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes3, 1));
+
+            // Convert to 32-bit int -> float 32
+            __m512 bvf_lo0 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_lo0));
+            __m512 bvf_hi0 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_hi0));
+            __m512 bvf_lo1 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_lo1));
+            __m512 bvf_hi1 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_hi1));
+            __m512 bvf_lo2 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_lo2));
+            __m512 bvf_hi2 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_hi2));
+            __m512 bvf_lo3 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_lo3));
+            __m512 bvf_hi3 = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_hi3));
+            bvf_lo0 = _mm512_mul_ps(bvf_lo0, scale_v0);
+            _mm512_storeu_ps(DequantB, bvf_lo0);
+            DequantB += 16;
+            bvf_hi0 = _mm512_mul_ps(bvf_hi0, scale_v0);
+            _mm512_storeu_ps(DequantB, bvf_hi0);
+            DequantB += 16;
+            bvf_lo1 = _mm512_mul_ps(bvf_lo1, scale_v1);
+            _mm512_storeu_ps(DequantB, bvf_lo1);
+            DequantB += 16;
+            bvf_hi1 = _mm512_mul_ps(bvf_hi1, scale_v1);
+            _mm512_storeu_ps(DequantB, bvf_hi1);
+            DequantB += 16;
+            bvf_lo2 = _mm512_mul_ps(bvf_lo2, scale_v2);
+            _mm512_storeu_ps(DequantB, bvf_lo2);
+            DequantB += 16;
+            bvf_hi2 = _mm512_mul_ps(bvf_hi2, scale_v2);
+            _mm512_storeu_ps(DequantB, bvf_hi2);
+            DequantB += 16;
+            bvf_lo3 = _mm512_mul_ps(bvf_lo3, scale_v3);
+            _mm512_storeu_ps(DequantB, bvf_lo3);
+            DequantB += 16;
+            bvf_hi3 = _mm512_mul_ps(bvf_hi3, scale_v3);
+            _mm512_storeu_ps(DequantB, bvf_hi3);
+            DequantB += 16;
+        }
+
+        nblk -= MLAS_Q4_N_STRIDE;
+    }
+
+    // left over columns less than 4 ?
+    nblk += MLAS_Q4_N_STRIDE;
+    if (nblk > 0) {
+
+        for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                const __m512 scale_v = _mm512_set1_ps(MlasQ4BlkScale<Q4Type>(b));
+
+                const __m128i bvi4 = _mm_loadu_si128((const __m128i*)MlasQ4BlkData<Q4Type>(b));
+                __m256i bytes = _mm256_set_m128i(_mm_srli_epi16(bvi4, 4), bvi4);
+                bytes = _mm256_and_si256(lowMask, bytes);
+
+                if constexpr (std::is_same_v<Q4Type, MLAS_Q4TYPE_BLK1>) {
+                    // Subtract zero-point from the integers
+                    const uint8_t zp = MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(b);
+                    bytes = _mm256_sub_epi8(bytes, _mm256_set1_epi8(zp));
+                } else {
+                    // Subtract 8 from the integers
+                    bytes = _mm256_sub_epi8(bytes, _mm256_set1_epi8(8));
+                }
+
+                // Convert to 16-bit int
+                const __m256i vx16_lo = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes, 0));
+                const __m256i vx16_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bytes, 1));
+
+                // Convert to 32-bit int -> float 32
+                __m512 bvf_lo = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_lo));
+                __m512 bvf_hi = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(vx16_hi));
+                bvf_lo = _mm512_mul_ps(bvf_lo, scale_v);
+                _mm512_storeu_ps(DequantB, bvf_lo);
+                DequantB += 16;
+                bvf_hi = _mm512_mul_ps(bvf_hi, scale_v);
+                _mm512_storeu_ps(DequantB, bvf_hi);
+                DequantB += 16;
+
+                b += typename Q4Type::BlobSize;
+            }
+            b += (MLAS_Q4_N_STRIDE - nblk) * (typename Q4Type::BlobSize);
+        }
+    }
+}
+
+template <typename Q4Type, typename KERNEL>
+MLAS_FORCEINLINE
+void
+MlasQ4Dequant(size_t CountN, size_t CountK, const uint8_t* PackedB, float* DequantB);
+
+template <>
+MLAS_FORCEINLINE
+void
+MlasQ4Dequant<MLAS_Q4TYPE_BLK0, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    size_t CountN,
+    size_t CountK,
+    const uint8_t* PackedB,
+    float* DequantB)
+{
+    return MlasQ4DequantAvx512f<MLAS_Q4TYPE_BLK0>(CountN, CountK, PackedB, DequantB);
+}
+
+template <>
+MLAS_FORCEINLINE
+void
+MlasQ4Dequant<MLAS_Q4TYPE_BLK1, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    size_t CountN,
+    size_t CountK,
+    const uint8_t* PackedB,
+    float* DequantB)
+{
+    return MlasQ4DequantAvx512f<MLAS_Q4TYPE_BLK1>(CountN, CountK, PackedB, DequantB);
+}
+
+
+template<typename Q4Type>
+MLAS_FORCEINLINE
+size_t
+MlasQ4DequantGemmKernelAvx512f(
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    float* C,
+    size_t ldc,
+    const float* Bias,
+    const float* A,
+    size_t lda,
+    const float* DequantB
+    )
+{
+    const __m256i lowMask = _mm256_set1_epi8(0xF);
+
+    if (CountM >= 4) {
+        const float* dequant_b = DequantB;
+        auto* sum_ptr = C;
+        auto* bias_ptr = Bias;
+        int64_t nblk = (int64_t)(CountN) - MLAS_Q4_N_STRIDE;
+        while (nblk >= 0) {
+            static_assert(MLAS_Q4_N_STRIDE == 4);
+            __m512 acc_r0c0 = _mm512_setzero();
+            __m512 acc_r0c1 = _mm512_setzero();
+            __m512 acc_r0c2 = _mm512_setzero();
+            __m512 acc_r0c3 = _mm512_setzero();
+            __m512 acc_r1c0 = _mm512_setzero();
+            __m512 acc_r1c1 = _mm512_setzero();
+            __m512 acc_r1c2 = _mm512_setzero();
+            __m512 acc_r1c3 = _mm512_setzero();
+            __m512 acc_r2c0 = _mm512_setzero();
+            __m512 acc_r2c1 = _mm512_setzero();
+            __m512 acc_r2c2 = _mm512_setzero();
+            __m512 acc_r2c3 = _mm512_setzero();
+            __m512 acc_r3c0 = _mm512_setzero();
+            __m512 acc_r3c1 = _mm512_setzero();
+            __m512 acc_r3c2 = _mm512_setzero();
+            __m512 acc_r3c3 = _mm512_setzero();
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                size_t ck = std::min(CountK - k, (typename Q4Type::BlkLen));
+
+                // Load A row vectors
+                uint32_t mask = 0xffffffff >> (typename Q4Type::BlkLen - ck);
+                __m512 av_r0lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k);
+                __m512 av_r1lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda);
+                __m512 av_r2lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 2);
+                __m512 av_r3lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 3);
+
+                mask = mask >> 16;
+                __m512 av_r0hi = mask == 0 ? _mm512_setzero_ps()
+                                           : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + 16);
+                __m512 av_r1hi = mask == 0
+                                     ? _mm512_setzero_ps()
+                                     : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda + 16);
+                __m512 av_r2hi = mask == 0
+                                     ? _mm512_setzero_ps()
+                                     : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 2 + 16);
+                __m512 av_r3hi = mask == 0
+                                     ? _mm512_setzero_ps()
+                                     : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 3 + 16);
+
+
+                __m512 bvf_lo0 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi0 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_lo1 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi1 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_lo2 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi2 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_lo3 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi3 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+
+                acc_r0c0 = _mm512_fmadd_ps(bvf_lo0, av_r0lo, acc_r0c0);
+                acc_r0c0 = _mm512_fmadd_ps(bvf_hi0, av_r0hi, acc_r0c0);
+                acc_r0c1 = _mm512_fmadd_ps(bvf_lo1, av_r0lo, acc_r0c1);
+                acc_r0c1 = _mm512_fmadd_ps(bvf_hi1, av_r0hi, acc_r0c1);
+                acc_r0c2 = _mm512_fmadd_ps(bvf_lo2, av_r0lo, acc_r0c2);
+                acc_r0c2 = _mm512_fmadd_ps(bvf_hi2, av_r0hi, acc_r0c2);
+                acc_r0c3 = _mm512_fmadd_ps(bvf_lo3, av_r0lo, acc_r0c3);
+                acc_r0c3 = _mm512_fmadd_ps(bvf_hi3, av_r0hi, acc_r0c3);
+
+                acc_r1c0 = _mm512_fmadd_ps(bvf_lo0, av_r1lo, acc_r1c0);
+                acc_r1c0 = _mm512_fmadd_ps(bvf_hi0, av_r1hi, acc_r1c0);
+                acc_r1c1 = _mm512_fmadd_ps(bvf_lo1, av_r1lo, acc_r1c1);
+                acc_r1c1 = _mm512_fmadd_ps(bvf_hi1, av_r1hi, acc_r1c1);
+                acc_r1c2 = _mm512_fmadd_ps(bvf_lo2, av_r1lo, acc_r1c2);
+                acc_r1c2 = _mm512_fmadd_ps(bvf_hi2, av_r1hi, acc_r1c2);
+                acc_r1c3 = _mm512_fmadd_ps(bvf_lo3, av_r1lo, acc_r1c3);
+                acc_r1c3 = _mm512_fmadd_ps(bvf_hi3, av_r1hi, acc_r1c3);
+
+                acc_r2c0 = _mm512_fmadd_ps(bvf_lo0, av_r2lo, acc_r2c0);
+                acc_r2c0 = _mm512_fmadd_ps(bvf_hi0, av_r2hi, acc_r2c0);
+                acc_r2c1 = _mm512_fmadd_ps(bvf_lo1, av_r2lo, acc_r2c1);
+                acc_r2c1 = _mm512_fmadd_ps(bvf_hi1, av_r2hi, acc_r2c1);
+                acc_r2c2 = _mm512_fmadd_ps(bvf_lo2, av_r2lo, acc_r2c2);
+                acc_r2c2 = _mm512_fmadd_ps(bvf_hi2, av_r2hi, acc_r2c2);
+                acc_r2c3 = _mm512_fmadd_ps(bvf_lo3, av_r2lo, acc_r2c3);
+                acc_r2c3 = _mm512_fmadd_ps(bvf_hi3, av_r2hi, acc_r2c3);
+
+                acc_r3c0 = _mm512_fmadd_ps(bvf_lo0, av_r3lo, acc_r3c0);
+                acc_r3c0 = _mm512_fmadd_ps(bvf_hi0, av_r3hi, acc_r3c0);
+                acc_r3c1 = _mm512_fmadd_ps(bvf_lo1, av_r3lo, acc_r3c1);
+                acc_r3c1 = _mm512_fmadd_ps(bvf_hi1, av_r3hi, acc_r3c1);
+                acc_r3c2 = _mm512_fmadd_ps(bvf_lo2, av_r3lo, acc_r3c2);
+                acc_r3c2 = _mm512_fmadd_ps(bvf_hi2, av_r3hi, acc_r3c2);
+                acc_r3c3 = _mm512_fmadd_ps(bvf_lo3, av_r3lo, acc_r3c3);
+                acc_r3c3 = _mm512_fmadd_ps(bvf_hi3, av_r3hi, acc_r3c3);
+            }
+
+            __m128 acc_x = FoldAccumulators(acc_r0c0, acc_r0c1, acc_r0c2, acc_r0c3);
+            if (Bias != nullptr) {
+                acc_x = _mm_add_ps(acc_x, _mm_loadu_ps(bias_ptr));
+            }
+            _mm_store_ps(sum_ptr, acc_x);
+
+            acc_x = FoldAccumulators(acc_r1c0, acc_r1c1, acc_r1c2, acc_r1c3);
+            if (Bias != nullptr) {
+                acc_x = _mm_add_ps(acc_x, _mm_loadu_ps(bias_ptr));
+            }
+            _mm_store_ps(sum_ptr + ldc, acc_x);
+
+            acc_x = FoldAccumulators(acc_r2c0, acc_r2c1, acc_r2c2, acc_r2c3);
+            if (Bias != nullptr) {
+                acc_x = _mm_add_ps(acc_x, _mm_loadu_ps(bias_ptr));
+            }
+            _mm_store_ps(sum_ptr + ldc * 2, acc_x);
+
+            acc_x = FoldAccumulators(acc_r3c0, acc_r3c1, acc_r3c2, acc_r3c3);
+            if (Bias != nullptr) {
+                acc_x = _mm_add_ps(acc_x, _mm_loadu_ps(bias_ptr));
+            }
+            _mm_store_ps(sum_ptr + ldc * 3, acc_x);
+
+            sum_ptr += MLAS_Q4_N_STRIDE;
+            bias_ptr += MLAS_Q4_N_STRIDE;
+            nblk -= MLAS_Q4_N_STRIDE;
+        }
+
+        // left over columns less than 4 ?
+        nblk += MLAS_Q4_N_STRIDE;
+        if (nblk > 0) {
+            __m512 acc_r0[MLAS_Q4_N_STRIDE]{};
+            __m512 acc_r1[MLAS_Q4_N_STRIDE]{};
+            __m512 acc_r2[MLAS_Q4_N_STRIDE]{};
+            __m512 acc_r3[MLAS_Q4_N_STRIDE]{};
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                size_t ck = std::min(CountK - k, (typename Q4Type::BlkLen));
+
+                uint32_t mask = 0xffffffff >> ((typename Q4Type::BlkLen) - ck);
+                __m512 av_r0lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k);
+                __m512 av_r1lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda);
+                __m512 av_r2lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 2);
+                __m512 av_r3lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 3);
+
+                mask = mask >> 16;
+                __m512 av_r0hi = mask == 0 ? _mm512_setzero_ps()
+                                           : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + 16);
+                __m512 av_r1hi = mask == 0
+                                     ? _mm512_setzero_ps()
+                                     : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda + 16);
+                __m512 av_r2hi = mask == 0
+                                     ? _mm512_setzero_ps()
+                                     : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 2 + 16);
+                __m512 av_r3hi = mask == 0
+                                     ? _mm512_setzero_ps()
+                                     : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + lda * 3 + 16);
+
+                for (int64_t nn = 0; nn < nblk; nn++) {
+                    __m512 bvf_lo = _mm512_loadu_ps(dequant_b);
+                    dequant_b += 16;
+                    __m512 bvf_hi = _mm512_loadu_ps(dequant_b);
+                    dequant_b += 16;
+
+                    acc_r0[nn] = _mm512_fmadd_ps(bvf_lo, av_r0lo, acc_r0[nn]);
+                    acc_r0[nn] = _mm512_fmadd_ps(bvf_hi, av_r0hi, acc_r0[nn]);
+                    acc_r1[nn] = _mm512_fmadd_ps(bvf_lo, av_r1lo, acc_r1[nn]);
+                    acc_r1[nn] = _mm512_fmadd_ps(bvf_hi, av_r1hi, acc_r1[nn]);
+                    acc_r2[nn] = _mm512_fmadd_ps(bvf_lo, av_r2lo, acc_r2[nn]);
+                    acc_r2[nn] = _mm512_fmadd_ps(bvf_hi, av_r2hi, acc_r2[nn]);
+                    acc_r3[nn] = _mm512_fmadd_ps(bvf_lo, av_r3lo, acc_r3[nn]);
+                    acc_r3[nn] = _mm512_fmadd_ps(bvf_hi, av_r3hi, acc_r3[nn]);
+                }
+            }
+
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                sum_ptr[nn] = _mm512_reduce_add_ps(acc_r0[nn]);
+                sum_ptr[nn] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+                sum_ptr[nn + ldc] = _mm512_reduce_add_ps(acc_r1[nn]);
+                sum_ptr[nn + ldc] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+                sum_ptr[nn + ldc * 2] = _mm512_reduce_add_ps(acc_r2[nn]);
+                sum_ptr[nn + ldc * 2] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+                sum_ptr[nn + ldc * 3] = _mm512_reduce_add_ps(acc_r3[nn]);
+                sum_ptr[nn + ldc * 3] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+            }
+        }
+
+        return 4;
+    }
+
+
+    for (size_t m = 0; m < CountM; m++) {
+        const float* dequant_b = DequantB;
+
+        auto* sum_ptr = C;
+        auto* bias_ptr = Bias;
+        int64_t nblk = (int64_t)(CountN) - MLAS_Q4_N_STRIDE;
+        while (nblk >= 0) {
+            static_assert(MLAS_Q4_N_STRIDE == 4);
+            __m512 acc_lo0 = _mm512_setzero();
+            __m512 acc_lo1 = _mm512_setzero();
+            __m512 acc_lo2 = _mm512_setzero();
+            __m512 acc_lo3 = _mm512_setzero();
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                size_t ck = std::min(CountK - k, (typename Q4Type::BlkLen));
+
+                // Load A row vectors
+                uint32_t mask = 0xffffffff >> (typename Q4Type::BlkLen - ck);
+                __m512 av_lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k);
+
+                mask = mask >> 16;
+                __m512 av_hi = mask == 0 ? _mm512_setzero_ps()
+                                         : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + 16);
+
+                __m512 bvf_lo0 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi0 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_lo1 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi1 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_lo2 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi2 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_lo3 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+                __m512 bvf_hi3 = _mm512_loadu_ps(dequant_b);
+                dequant_b += 16;
+
+                acc_lo0 = _mm512_fmadd_ps(bvf_lo0, av_lo, acc_lo0);
+                acc_lo0 = _mm512_fmadd_ps(bvf_hi0, av_hi, acc_lo0);
+                acc_lo1 = _mm512_fmadd_ps(bvf_lo1, av_lo, acc_lo1);
+                acc_lo1 = _mm512_fmadd_ps(bvf_hi1, av_hi, acc_lo1);
+                acc_lo2 = _mm512_fmadd_ps(bvf_lo2, av_lo, acc_lo2);
+                acc_lo2 = _mm512_fmadd_ps(bvf_hi2, av_hi, acc_lo2);
+                acc_lo3 = _mm512_fmadd_ps(bvf_lo3, av_lo, acc_lo3);
+                acc_lo3 = _mm512_fmadd_ps(bvf_hi3, av_hi, acc_lo3);
+            }
+
+            __m128 acc_x = FoldAccumulators(acc_lo0, acc_lo1, acc_lo2, acc_lo3);
+
+            if (Bias != nullptr) {
+                acc_x = _mm_add_ps(acc_x, _mm_loadu_ps(bias_ptr));
+            }
+
+            _mm_store_ps(sum_ptr, acc_x);
+
+            sum_ptr += MLAS_Q4_N_STRIDE;
+            bias_ptr += MLAS_Q4_N_STRIDE;
+            nblk -= MLAS_Q4_N_STRIDE;
+        }
+
+        // left over columns less than 4 ?
+        nblk += MLAS_Q4_N_STRIDE;
+        if (nblk > 0) {
+            __m512 acc_lo[MLAS_Q4_N_STRIDE]{};
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                size_t ck = std::min(CountK - k, (typename Q4Type::BlkLen));
+
+                uint32_t mask = 0xffffffff >> ((typename Q4Type::BlkLen) - ck);
+                __m512 av_lo = _mm512_maskz_loadu_ps(__mmask16(mask), A + k);
+
+                mask = mask >> 16;
+                __m512 av_hi = mask == 0 ? _mm512_setzero_ps()
+                    : _mm512_maskz_loadu_ps(__mmask16(mask), A + k + 16);
+
+                for (int64_t nn = 0; nn < nblk; nn++) {
+                    __m512 bvf_lo = _mm512_loadu_ps(dequant_b);
+                    dequant_b += 16;
+                    __m512 bvf_hi = _mm512_loadu_ps(dequant_b);
+                    dequant_b += 16;
+
+                    acc_lo[nn] = _mm512_fmadd_ps(bvf_lo, av_lo, acc_lo[nn]);
+                    acc_lo[nn] = _mm512_fmadd_ps(bvf_hi, av_hi, acc_lo[nn]);
+                }
+            }
+
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                sum_ptr[nn] = _mm512_reduce_add_ps(acc_lo[nn]);
+                sum_ptr[nn] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+            }
+        }
+
+        // Prepare pointers for the next row
+        C += ldc;
+        A += lda;
+    }
+    return CountM;
+}
+
+template<typename Q4Type, typename KERNEL>
+MLAS_FORCEINLINE
+size_t
+MlasQ4DequantGemmKernel(
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    float* C,
+    size_t ldc,
+    const float* Bias,
+    const float* A,
+    size_t lda,
+    const float* DequantB
+    );
+
+template<>
+MLAS_FORCEINLINE
+size_t
+MlasQ4DequantGemmKernel<MLAS_Q4TYPE_BLK0, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    float* C,
+    size_t ldc,
+    const float* Bias,
+    const float* A,
+    size_t lda,
+    const float* DequantB)
+{
+    return MlasQ4DequantGemmKernelAvx512f<MLAS_Q4TYPE_BLK0>(CountM, CountN, CountK, C, ldc, Bias, A,
+                                                            lda, DequantB);
+}
+
+template<>
+MLAS_FORCEINLINE
+size_t
+MlasQ4DequantGemmKernel<MLAS_Q4TYPE_BLK1, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    float* C,
+    size_t ldc,
+    const float* Bias,
+    const float* A,
+    size_t lda,
+    const float* DequantB)
+{
+    return MlasQ4DequantGemmKernelAvx512f<MLAS_Q4TYPE_BLK1>(CountM, CountN, CountK, C, ldc, Bias, A,
+                                                            lda, DequantB);
+}
+
 template <typename Q4TYPE, typename KERNEL>
 void MLASCALL
 MlasQ4GemmOperation(
@@ -380,7 +926,7 @@ MlasQ4GemmOperation(
 
     size_t CountN;
     for (size_t n = 0; n < RangeCountN; n += CountN) {
-        CountN = std::min(RangeCountN - n, (size_t)128);
+        CountN = std::min(RangeCountN - n, (size_t)32);
 
         //
         // Step through each slice of matrix A along the M dimension.
@@ -390,10 +936,21 @@ MlasQ4GemmOperation(
         float* c_blk = C + n;
         const float* a_row = A;
 
+        size_t bufsize = k_blks * (typename Q4TYPE::BlkLen) * CountN * sizeof(float);
+        MlasThreadedBufAlloc(bufsize);
+        auto* dequant_b = reinterpret_cast<float*>(ThreadedBufHolder.get());
+
+        MlasQ4Dequant<Q4TYPE, KERNEL>(CountN, K, b_col, dequant_b);
+//        *dequant_b = *reinterpret_cast<const float*>(b_col);
+        if (bias)
+            dequant_b[1] = *bias;
+
         size_t RowsRemaining = RangeCountM;
         while (RowsRemaining > 0) {
-            auto RowsHandled =
-                MlasQ4GemmKernel<Q4TYPE, KERNEL>(RowsRemaining, CountN, K, c_blk, ldc, bias, a_row, lda, b_col);
+//            auto RowsHandled = MlasQ4DequantGemmKernel<Q4TYPE, KERNEL>(
+//                RowsRemaining, CountN, K, c_blk, ldc, bias, a_row, lda, dequant_b);
+            auto RowsHandled = GetMlasPlatform().GemmFloatKernel(A, dequant_b, C, K, RowsRemaining, CountN, lda,
+                                                            ldc, 1.f, true);
 
             if (DataParams->OutputProcessor != nullptr) {
                 DataParams->OutputProcessor->Process(
@@ -918,7 +1475,7 @@ MlasQ4GemmBatchDriver(
         ThreadsPerGemm = 1;
     }
 
-    const size_t StrideM = 4;  // dispatch->StrideM;
+    const size_t StrideM = 1024;
 
     size_t nc = N;
     if (ThreadsPerGemm > 1) {
@@ -927,7 +1484,7 @@ MlasQ4GemmBatchDriver(
         const size_t BlockedM = MlasDivRoundup(M, StrideM);
         const size_t max_nc = MlasDivRoundup(N * BlockedM, ThreadsPerGemm);
         if (max_nc < nc) {
-            nc = std::min(nc, MlasDivRoundup(nc, max_nc * MLAS_QGEMM_STRIDEN_THREAD_ALIGN) *
+            nc = std::min(nc, MlasDivRoundup(max_nc, MLAS_QGEMM_STRIDEN_THREAD_ALIGN) *
                                   MLAS_QGEMM_STRIDEN_THREAD_ALIGN);
         }
     }
