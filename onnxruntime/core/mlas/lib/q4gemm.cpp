@@ -610,17 +610,17 @@ MlasQ8Q4GemmKernelAvx512f(
 
         int64_t nblk = (int64_t)(CountN) - 4;
         while (nblk >= 0) {
-            __m256 acc_lo0 = _mm256_setzero_ps();
-            __m256 acc_lo1 = _mm256_setzero_ps();
-            __m256 acc_lo2 = _mm256_setzero_ps();
-            __m256 acc_lo3 = _mm256_setzero_ps();
+            __m256 acc_r0c0 = _mm256_setzero_ps();
+            __m256 acc_r0c1 = _mm256_setzero_ps();
+            __m256 acc_r0c2 = _mm256_setzero_ps();
+            __m256 acc_r0c3 = _mm256_setzero_ps();
             const int8_t* ablob = QuantA;
             const auto* b = b_col;
 
             for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
                 const float a_scale = *reinterpret_cast<const float*>(ablob);
                 ablob += sizeof(float);
-                const __m256i a_bytes = _mm256_loadu_si256((const __m256i*)ablob);
+                const __m256i a_bytes0 = _mm256_loadu_si256((const __m256i*)ablob);
                 ablob += 32;
 
                 // Load 4 B column vectors (quantized to int4 blobs)
@@ -663,7 +663,7 @@ MlasQ8Q4GemmKernelAvx512f(
                         bytes3,
                         _mm256_set1_epi8(MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(b + ldb * 3)));
                 } else {
-                    __m256i eight = _mm256_set1_epi8(8);
+                    const __m256i eight = _mm256_set1_epi8(8);
                     bytes0 = _mm256_sub_epi8(bytes0, eight);
                     bytes1 = _mm256_sub_epi8(bytes1, eight);
                     bytes2 = _mm256_sub_epi8(bytes2, eight);
@@ -674,26 +674,26 @@ MlasQ8Q4GemmKernelAvx512f(
                 // b vals to make it all positive, and then also negate the
                 // corresponding a vals to compensate
                 const __m256i summed_pairs0 = _mm256_dpbusd_epi32(
-                    zero, _mm256_sign_epi8(bytes0, bytes0), _mm256_sign_epi8(a_bytes, bytes0));
+                    zero, _mm256_sign_epi8(bytes0, bytes0), _mm256_sign_epi8(a_bytes0, bytes0));
                 const __m256i summed_pairs1 = _mm256_dpbusd_epi32(
-                    zero, _mm256_sign_epi8(bytes1, bytes1), _mm256_sign_epi8(a_bytes, bytes1));
+                    zero, _mm256_sign_epi8(bytes1, bytes1), _mm256_sign_epi8(a_bytes0, bytes1));
                 const __m256i summed_pairs2 = _mm256_dpbusd_epi32(
-                    zero, _mm256_sign_epi8(bytes2, bytes2), _mm256_sign_epi8(a_bytes, bytes2));
+                    zero, _mm256_sign_epi8(bytes2, bytes2), _mm256_sign_epi8(a_bytes0, bytes2));
                 const __m256i summed_pairs3 = _mm256_dpbusd_epi32(
-                    zero, _mm256_sign_epi8(bytes3, bytes3), _mm256_sign_epi8(a_bytes, bytes3));
+                    zero, _mm256_sign_epi8(bytes3, bytes3), _mm256_sign_epi8(a_bytes0, bytes3));
 
                 const __m256 sums0 = _mm256_cvtepi32_ps(summed_pairs0);
                 const __m256 sums1 = _mm256_cvtepi32_ps(summed_pairs1);
                 const __m256 sums2 = _mm256_cvtepi32_ps(summed_pairs2);
                 const __m256 sums3 = _mm256_cvtepi32_ps(summed_pairs3);
-                acc_lo0 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v0), sums0, acc_lo0);
-                acc_lo1 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v1), sums1, acc_lo1);
-                acc_lo2 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v2), sums2, acc_lo2);
-                acc_lo3 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v3), sums3, acc_lo3);
+                acc_r0c0 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v0), sums0, acc_r0c0);
+                acc_r0c1 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v1), sums1, acc_r0c1);
+                acc_r0c2 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v2), sums2, acc_r0c2);
+                acc_r0c3 = _mm256_fmadd_ps(_mm256_set1_ps(scale_v3), sums3, acc_r0c3);
                 b += Q4Type::BlobSize;
             }
 
-            __m128 acc_x = FoldAccumulators(acc_lo0, acc_lo1, acc_lo2, acc_lo3);
+            __m128 acc_x = FoldAccumulators(acc_r0c0, acc_r0c1, acc_r0c2, acc_r0c3);
             if (Bias != nullptr) {
                 acc_x = _mm_add_ps(acc_x, _mm_loadu_ps(bias_ptr));
             }
@@ -820,6 +820,525 @@ MlasQ8Q4GemmKernel<MLAS_Q4TYPE_BLK0, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
                                                        lda, ldb, ldc, Bias);
 }
 
+template<typename Q4Type>
+MLAS_FORCEINLINE
+void
+MlasQ8Q4DequantBAvx512f(
+    int8_t* DequantB,
+    const uint8_t* PackedB,
+    size_t CountN,
+    size_t CountK,
+    size_t ldb
+    )
+{
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i lowMask = _mm256_set1_epi8(0xF);
+
+    const uint8_t* b_col = PackedB;
+
+    for (size_t n = 0; n < CountN; n++) {
+        const auto* b = b_col;
+
+        for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+            const float scale = MlasQ4BlkScale<Q4Type>(b);
+            *reinterpret_cast<float*>(DequantB) = scale;
+            DequantB += sizeof(float);
+
+            const __m128i bvi4 = _mm_loadu_si128((const __m128i*)MlasQ4BlkData<Q4Type>(b));
+            __m256i b_bytes = _mm256_set_m128i(_mm_srli_epi16(bvi4, 4), bvi4);
+            b_bytes = _mm256_and_si256(lowMask, b_bytes);
+
+            // Subtract zero-point
+            if constexpr (std::is_same_v<Q4Type, MLAS_Q4TYPE_BLK1>) {
+                const uint8_t zp = MlasQ4BlkZeroPoint<MLAS_Q4TYPE_BLK1>(b);
+                b_bytes = _mm256_sub_epi8(b_bytes, _mm256_set1_epi8(zp));
+            } else {
+                b_bytes = _mm256_sub_epi8(b_bytes, _mm256_set1_epi8(8));
+            }
+
+            _mm256_storeu_epi8(DequantB, b_bytes);
+            DequantB += 32;
+            b += typename Q4Type::BlobSize;
+        }
+        b_col += ldb;
+    }
+}
+
+template<typename Q4Type, typename KERNEL>
+MLAS_FORCEINLINE
+void
+MlasQ8Q4DequantB(
+    int8_t* DequantB,
+    const uint8_t* PackedB,
+    size_t CountN,
+    size_t CountK,
+    size_t ldb
+    );
+
+template<>
+MLAS_FORCEINLINE
+void
+MlasQ8Q4DequantB<MLAS_Q4TYPE_BLK0, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    int8_t* DequantB,
+    const uint8_t* PackedB,
+    size_t CountN,
+    size_t CountK,
+    size_t ldb
+)
+{
+    MlasQ8Q4DequantBAvx512f<MLAS_Q4TYPE_BLK0>(DequantB, PackedB, CountN, CountK, ldb);
+}
+
+template<>
+MLAS_FORCEINLINE
+void
+MlasQ8Q4DequantB<MLAS_Q4TYPE_BLK1, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    int8_t* DequantB,
+    const uint8_t* PackedB,
+    size_t CountN,
+    size_t CountK,
+    size_t ldb
+)
+{
+    MlasQ8Q4DequantBAvx512f<MLAS_Q4TYPE_BLK1>(DequantB, PackedB, CountN, CountK, ldb);
+}
+
+template<typename Q4Type>
+MLAS_FORCEINLINE
+size_t
+BlkQ8GemmKernelAvx512Vnni(
+    const int8_t* QuantA,
+    const int8_t* Q8B,
+    float* C,
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    size_t lda,
+    size_t ldc,
+    const float* Bias
+    )
+{
+    const __m256i zero = _mm256_setzero_si256();
+    const size_t k_blks = MlasDivRoundup(CountK, typename Q4Type::BlkLen);
+    const size_t ldb = k_blks * (sizeof(float) + typename Q4Type::BlkLen);
+
+    int64_t rows = (int64_t)CountM;
+    while (rows >= 4) {
+        const int8_t* b_col = Q8B;
+        auto* sum_ptr = C;
+        auto* bias_ptr = Bias;
+
+        int64_t nblk = (int64_t)(CountN) - 4;
+        while (nblk >= 0) {
+            __m256 acc_r0c0 = _mm256_setzero_ps();
+            __m256 acc_r0c1 = _mm256_setzero_ps();
+            __m256 acc_r0c2 = _mm256_setzero_ps();
+            __m256 acc_r0c3 = _mm256_setzero_ps();
+            __m256 acc_r1c0 = _mm256_setzero_ps();
+            __m256 acc_r1c1 = _mm256_setzero_ps();
+            __m256 acc_r1c2 = _mm256_setzero_ps();
+            __m256 acc_r1c3 = _mm256_setzero_ps();
+            __m256 acc_r2c0 = _mm256_setzero_ps();
+            __m256 acc_r2c1 = _mm256_setzero_ps();
+            __m256 acc_r2c2 = _mm256_setzero_ps();
+            __m256 acc_r2c3 = _mm256_setzero_ps();
+            __m256 acc_r3c0 = _mm256_setzero_ps();
+            __m256 acc_r3c1 = _mm256_setzero_ps();
+            __m256 acc_r3c2 = _mm256_setzero_ps();
+            __m256 acc_r3c3 = _mm256_setzero_ps();
+            const int8_t* ablob = QuantA;
+            const auto* b = b_col;
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                const float a_scale0 = *reinterpret_cast<const float*>(ablob);
+                const __m256i a_bytes0 = _mm256_loadu_si256((const __m256i*)(ablob + sizeof(float)));
+
+                // Load 4 B column vectors (quantized to int4 blobs)
+                const float b_scale0 = (*reinterpret_cast<const float*>(b));
+                const float b_scale1 = (*reinterpret_cast<const float*>(b + ldb));
+                const float b_scale2 = (*reinterpret_cast<const float*>(b + ldb * 2));
+                const float b_scale3 = (*reinterpret_cast<const float*>(b + ldb * 3));
+                b += sizeof(float);
+
+                __m256i bytes0 = _mm256_loadu_epi8(b);
+                __m256i bytes1 = _mm256_loadu_epi8(b + ldb);
+                __m256i bytes2 = _mm256_loadu_epi8(b + ldb * 2);
+                __m256i bytes3 = _mm256_loadu_epi8(b + ldb * 3);
+                b += 32;
+
+                const float a_scale1 = *reinterpret_cast<const float*>(ablob + lda);
+                const __m256i a_bytes1 = _mm256_loadu_si256((const __m256i*)(ablob + lda + sizeof(float)));
+
+                // to use vnni unsigned x signed int, negate all negative
+                // b vals to make it all positive, and then also negate the
+                // corresponding a vals to compensate
+                const __m256i abs0 = _mm256_sign_epi8(bytes0, bytes0);
+                const __m256i abs1 = _mm256_sign_epi8(bytes1, bytes1);
+                const __m256i abs2 = _mm256_sign_epi8(bytes2, bytes2);
+                const __m256i abs3 = _mm256_sign_epi8(bytes3, bytes3);
+                __m256i summed_pairs0 = _mm256_dpbusd_epi32(
+                    zero, abs0, _mm256_sign_epi8(a_bytes0, bytes0));
+                __m256i summed_pairs1 = _mm256_dpbusd_epi32(
+                    zero, abs1, _mm256_sign_epi8(a_bytes0, bytes1));
+                __m256i summed_pairs2 = _mm256_dpbusd_epi32(
+                    zero, abs2, _mm256_sign_epi8(a_bytes0, bytes2));
+                __m256i summed_pairs3 = _mm256_dpbusd_epi32(
+                    zero, abs3, _mm256_sign_epi8(a_bytes0, bytes3));
+
+                __m256 sums0 = _mm256_cvtepi32_ps(summed_pairs0);
+                __m256 sums1 = _mm256_cvtepi32_ps(summed_pairs1);
+                __m256 sums2 = _mm256_cvtepi32_ps(summed_pairs2);
+                __m256 sums3 = _mm256_cvtepi32_ps(summed_pairs3);
+                acc_r0c0 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale0 * a_scale0), sums0, acc_r0c0);
+                acc_r0c1 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale1 * a_scale0), sums1, acc_r0c1);
+                acc_r0c2 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale2 * a_scale0), sums2, acc_r0c2);
+                acc_r0c3 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale3 * a_scale0), sums3, acc_r0c3);
+
+                const float a_scale2 = *reinterpret_cast<const float*>(ablob + lda * 2);
+                const __m256i a_bytes2 = _mm256_loadu_si256((const __m256i*)(ablob + lda * 2 + sizeof(float)));
+
+                // to use vnni unsigned x signed int, negate all negative
+                // b vals to make it all positive, and then also negate the
+                // corresponding a vals to compensate
+                summed_pairs0 = _mm256_dpbusd_epi32(
+                    zero, abs0, _mm256_sign_epi8(a_bytes1, bytes0));
+                summed_pairs1 = _mm256_dpbusd_epi32(
+                    zero, abs1, _mm256_sign_epi8(a_bytes1, bytes1));
+                summed_pairs2 = _mm256_dpbusd_epi32(
+                    zero, abs2, _mm256_sign_epi8(a_bytes1, bytes2));
+                summed_pairs3 = _mm256_dpbusd_epi32(
+                    zero, abs3, _mm256_sign_epi8(a_bytes1, bytes3));
+
+                sums0 = _mm256_cvtepi32_ps(summed_pairs0);
+                sums1 = _mm256_cvtepi32_ps(summed_pairs1);
+                sums2 = _mm256_cvtepi32_ps(summed_pairs2);
+                sums3 = _mm256_cvtepi32_ps(summed_pairs3);
+                acc_r1c0 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale0 * a_scale1), sums0, acc_r1c0);
+                acc_r1c1 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale1 * a_scale1), sums1, acc_r1c1);
+                acc_r1c2 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale2 * a_scale1), sums2, acc_r1c2);
+                acc_r1c3 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale3 * a_scale1), sums3, acc_r1c3);
+
+                const float a_scale3 = *reinterpret_cast<const float*>(ablob + lda * 3);
+                const __m256i a_bytes3 = _mm256_loadu_si256((const __m256i*)(ablob + lda * 3 + sizeof(float)));
+
+                // to use vnni unsigned x signed int, negate all negative
+                // b vals to make it all positive, and then also negate the
+                // corresponding a vals to compensate
+                summed_pairs0 = _mm256_dpbusd_epi32(
+                    zero, abs0, _mm256_sign_epi8(a_bytes2, bytes0));
+                summed_pairs1 = _mm256_dpbusd_epi32(
+                    zero, abs1, _mm256_sign_epi8(a_bytes2, bytes1));
+                summed_pairs2 = _mm256_dpbusd_epi32(
+                    zero, abs2, _mm256_sign_epi8(a_bytes2, bytes2));
+                summed_pairs3 = _mm256_dpbusd_epi32(
+                    zero, abs3, _mm256_sign_epi8(a_bytes2, bytes3));
+
+                sums0 = _mm256_cvtepi32_ps(summed_pairs0);
+                sums1 = _mm256_cvtepi32_ps(summed_pairs1);
+                sums2 = _mm256_cvtepi32_ps(summed_pairs2);
+                sums3 = _mm256_cvtepi32_ps(summed_pairs3);
+                acc_r2c0 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale0 * a_scale2), sums0, acc_r2c0);
+                acc_r2c1 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale1 * a_scale2), sums1, acc_r2c1);
+                acc_r2c2 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale2 * a_scale2), sums2, acc_r2c2);
+                acc_r2c3 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale3 * a_scale2), sums3, acc_r2c3);
+
+                // to use vnni unsigned x signed int, negate all negative
+                // b vals to make it all positive, and then also negate the
+                // corresponding a vals to compensate
+                summed_pairs0 = _mm256_dpbusd_epi32(
+                    zero, abs0, _mm256_sign_epi8(a_bytes3, bytes0));
+                summed_pairs1 = _mm256_dpbusd_epi32(
+                    zero, abs1, _mm256_sign_epi8(a_bytes3, bytes1));
+                summed_pairs2 = _mm256_dpbusd_epi32(
+                    zero, abs2, _mm256_sign_epi8(a_bytes3, bytes2));
+                summed_pairs3 = _mm256_dpbusd_epi32(
+                    zero, abs3, _mm256_sign_epi8(a_bytes3, bytes3));
+
+                sums0 = _mm256_cvtepi32_ps(summed_pairs0);
+                sums1 = _mm256_cvtepi32_ps(summed_pairs1);
+                sums2 = _mm256_cvtepi32_ps(summed_pairs2);
+                sums3 = _mm256_cvtepi32_ps(summed_pairs3);
+                acc_r3c0 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale0 * a_scale3), sums0, acc_r3c0);
+                acc_r3c1 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale1 * a_scale3), sums1, acc_r3c1);
+                acc_r3c2 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale2 * a_scale3), sums2, acc_r3c2);
+                acc_r3c3 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale3 * a_scale3), sums3, acc_r3c3);
+
+                ablob += 32 + sizeof(float);
+            }
+
+            __m128 acc_x0 = FoldAccumulators(acc_r0c0, acc_r0c1, acc_r0c2, acc_r0c3);
+            __m128 acc_x1 = FoldAccumulators(acc_r1c0, acc_r1c1, acc_r1c2, acc_r1c3);
+            __m128 acc_x2 = FoldAccumulators(acc_r2c0, acc_r2c1, acc_r2c2, acc_r2c3);
+            __m128 acc_x3 = FoldAccumulators(acc_r3c0, acc_r3c1, acc_r3c2, acc_r3c3);
+            if (Bias != nullptr) {
+                acc_x0 = _mm_add_ps(acc_x0, _mm_loadu_ps(bias_ptr));
+                acc_x1 = _mm_add_ps(acc_x1, _mm_loadu_ps(bias_ptr));
+                acc_x2 = _mm_add_ps(acc_x2, _mm_loadu_ps(bias_ptr));
+                acc_x3 = _mm_add_ps(acc_x3, _mm_loadu_ps(bias_ptr));
+            }
+            _mm_store_ps(sum_ptr, acc_x0);
+            _mm_store_ps(sum_ptr + ldc, acc_x1);
+            _mm_store_ps(sum_ptr + ldc * 2, acc_x2);
+            _mm_store_ps(sum_ptr + ldc * 3, acc_x3);
+
+            // move to next 4 columns
+            b_col += 4 * ldb;
+            sum_ptr += 4;
+            bias_ptr += 4;
+            nblk -= 4;
+        }
+
+        // left over columns less than 4 ?
+        nblk += 4;
+        if (nblk > 0) {
+            __m256 acc_r0[4]{};
+            __m256 acc_r1[4]{};
+            __m256 acc_r2[4]{};
+            __m256 acc_r3[4]{};
+            const int8_t* ablob = QuantA;
+            const auto* b = b_col;
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                const float a_scale0 = *reinterpret_cast<const float*>(ablob);
+                const __m256i a_bytes0 = _mm256_loadu_si256((const __m256i*)(ablob + sizeof(float)));
+                const float a_scale1 = *reinterpret_cast<const float*>(ablob + lda);
+                const __m256i a_bytes1 = _mm256_loadu_si256((const __m256i*)(ablob + lda + sizeof(float)));
+                const float a_scale2 = *reinterpret_cast<const float*>(ablob + lda * 2);
+                const __m256i a_bytes2 =
+                    _mm256_loadu_si256((const __m256i*)(ablob + lda * 2 + sizeof(float)));
+                const float a_scale3 = *reinterpret_cast<const float*>(ablob + lda * 3);
+                const __m256i a_bytes3 =
+                    _mm256_loadu_si256((const __m256i*)(ablob + lda * 3 + sizeof(float)));
+                ablob += 32 + sizeof(float);
+
+                for (int64_t nn = 0; nn < nblk; nn++) {
+                    const auto* bb = b + ldb * nn;
+                    const float b_scale = (*reinterpret_cast<const float*>(bb));
+                    __m256i b_bytes = _mm256_loadu_epi8(bb + sizeof(float));
+
+                    // to use vnni unsigned x signed int, negate all negative
+                    // b vals to make it all positive, 
+                    const __m256i ax = _mm256_sign_epi8(b_bytes, b_bytes);
+                    // and then also negate the corresponding a vals to compensate
+                    __m256i sy = _mm256_sign_epi8(a_bytes0, b_bytes);
+                    __m256i summed_pairs = _mm256_dpbusd_epi32(zero, ax, sy);
+                    __m256 sum = _mm256_cvtepi32_ps(summed_pairs);
+                    acc_r0[nn] = _mm256_fmadd_ps(_mm256_set1_ps(a_scale0 * b_scale), sum, acc_r0[nn]);
+
+                    sy = _mm256_sign_epi8(a_bytes1, b_bytes);
+                    summed_pairs = _mm256_dpbusd_epi32(zero, ax, sy);
+                    sum = _mm256_cvtepi32_ps(summed_pairs);
+                    acc_r1[nn] =
+                        _mm256_fmadd_ps(_mm256_set1_ps(a_scale1 * b_scale), sum, acc_r1[nn]);
+
+                    sy = _mm256_sign_epi8(a_bytes2, b_bytes);
+                    summed_pairs = _mm256_dpbusd_epi32(zero, ax, sy);
+                    sum = _mm256_cvtepi32_ps(summed_pairs);
+                    acc_r2[nn] =
+                        _mm256_fmadd_ps(_mm256_set1_ps(a_scale2 * b_scale), sum, acc_r2[nn]);
+
+                    sy = _mm256_sign_epi8(a_bytes3, b_bytes);
+                    summed_pairs = _mm256_dpbusd_epi32(zero, ax, sy);
+                    sum = _mm256_cvtepi32_ps(summed_pairs);
+                    acc_r3[nn] =
+                        _mm256_fmadd_ps(_mm256_set1_ps(a_scale3 * b_scale), sum, acc_r3[nn]);
+                }
+                b += sizeof(float) + typename Q4Type::BlkLen;
+            }
+
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                sum_ptr[nn] = mm256_reduce_add_ps(acc_r0[nn]);
+                sum_ptr[nn] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+            }
+            sum_ptr += ldc;
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                sum_ptr[nn] = mm256_reduce_add_ps(acc_r1[nn]);
+                sum_ptr[nn] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+            }
+            sum_ptr += ldc;
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                sum_ptr[nn] = mm256_reduce_add_ps(acc_r2[nn]);
+                sum_ptr[nn] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+            }
+            sum_ptr += ldc;
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                sum_ptr[nn] = mm256_reduce_add_ps(acc_r3[nn]);
+                sum_ptr[nn] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+            }
+        }
+
+        // Prepare pointers for the next 4 rows
+        C += ldc * 4;
+        QuantA += lda * 4;
+        rows -= 4;
+    }
+
+
+    while (rows > 0) {
+        const int8_t* b_col = Q8B;
+        auto* sum_ptr = C;
+        auto* bias_ptr = Bias;
+
+        int64_t nblk = (int64_t)(CountN)-4;
+        while (nblk >= 0) {
+            __m256 acc_r0c0 = _mm256_setzero_ps();
+            __m256 acc_r0c1 = _mm256_setzero_ps();
+            __m256 acc_r0c2 = _mm256_setzero_ps();
+            __m256 acc_r0c3 = _mm256_setzero_ps();
+            const int8_t* ablob = QuantA;
+            const auto* b = b_col;
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                const float a_scale0 = *reinterpret_cast<const float*>(ablob);
+                ablob += sizeof(float);
+                const __m256i a_bytes0 = _mm256_loadu_si256((const __m256i*)ablob);
+                ablob += 32;
+
+                // Load 4 B column vectors (quantized to int4 blobs)
+                const float b_scale0 = (*reinterpret_cast<const float*>(b));
+                const float b_scale1 = (*reinterpret_cast<const float*>(b + ldb));
+                const float b_scale2 = (*reinterpret_cast<const float*>(b + ldb * 2));
+                const float b_scale3 = (*reinterpret_cast<const float*>(b + ldb * 3));
+                b += sizeof(float);
+
+                __m256i bytes0 = _mm256_loadu_epi8(b);
+                __m256i bytes1 = _mm256_loadu_epi8(b + ldb);
+                __m256i bytes2 = _mm256_loadu_epi8(b + ldb * 2);
+                __m256i bytes3 = _mm256_loadu_epi8(b + ldb * 3);
+                b += 32;
+
+                // to use vnni unsigned x signed int, negate all negative
+                // b vals to make it all positive, and then also negate the
+                // corresponding a vals to compensate
+                const __m256i summed_pairs0 = _mm256_dpbusd_epi32(
+                    zero, _mm256_sign_epi8(bytes0, bytes0), _mm256_sign_epi8(a_bytes0, bytes0));
+                const __m256i summed_pairs1 = _mm256_dpbusd_epi32(
+                    zero, _mm256_sign_epi8(bytes1, bytes1), _mm256_sign_epi8(a_bytes0, bytes1));
+                const __m256i summed_pairs2 = _mm256_dpbusd_epi32(
+                    zero, _mm256_sign_epi8(bytes2, bytes2), _mm256_sign_epi8(a_bytes0, bytes2));
+                const __m256i summed_pairs3 = _mm256_dpbusd_epi32(
+                    zero, _mm256_sign_epi8(bytes3, bytes3), _mm256_sign_epi8(a_bytes0, bytes3));
+
+                const __m256 sums0 = _mm256_cvtepi32_ps(summed_pairs0);
+                const __m256 sums1 = _mm256_cvtepi32_ps(summed_pairs1);
+                const __m256 sums2 = _mm256_cvtepi32_ps(summed_pairs2);
+                const __m256 sums3 = _mm256_cvtepi32_ps(summed_pairs3);
+                acc_r0c0 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale0 * a_scale0), sums0, acc_r0c0);
+                acc_r0c1 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale1 * a_scale0), sums1, acc_r0c1);
+                acc_r0c2 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale2 * a_scale0), sums2, acc_r0c2);
+                acc_r0c3 = _mm256_fmadd_ps(_mm256_set1_ps(b_scale3 * a_scale0), sums3, acc_r0c3);
+            }
+
+            __m128 acc_x = FoldAccumulators(acc_r0c0, acc_r0c1, acc_r0c2, acc_r0c3);
+            if (Bias != nullptr) {
+                acc_x = _mm_add_ps(acc_x, _mm_loadu_ps(bias_ptr));
+            }
+            _mm_store_ps(sum_ptr, acc_x);
+
+            // move to next 4 columns
+            b_col += 4 * ldb;
+            sum_ptr += 4;
+            bias_ptr += 4;
+            nblk -= 4;
+        }
+
+        // left over columns less than 4 ?
+        nblk += 4;
+        if (nblk > 0) {
+            __m256 acc_lo[4]{};
+            const int8_t* ablob = QuantA;
+            const auto* b = b_col;
+
+            for (size_t k = 0; k < CountK; k += (typename Q4Type::BlkLen)) {
+                const float a_scale = *reinterpret_cast<const float*>(ablob);
+                ablob += sizeof(float);
+                const __m256i a_bytes = _mm256_loadu_si256((const __m256i*)ablob);
+                ablob += 32;
+
+                for (int64_t nn = 0; nn < nblk; nn++) {
+                    const auto* bb = b + ldb * nn;
+                    const float scale_v = (*reinterpret_cast<const float*>(bb)) * a_scale;
+                    __m256i b_bytes = _mm256_loadu_epi8(bb + sizeof(float));
+
+                    // to use vnni unsigned x signed int, negate all negative
+                    // b vals to make it all positive,
+                    const __m256i ax = _mm256_sign_epi8(b_bytes, b_bytes);
+                    // and then also negate the corresponding a vals to compensate
+                    const __m256i sy = _mm256_sign_epi8(a_bytes, b_bytes);
+                    const __m256i summed_pairs = _mm256_dpbusd_epi32(zero, ax, sy);
+                    const __m256 sum = _mm256_cvtepi32_ps(summed_pairs);
+                    acc_lo[nn] = _mm256_fmadd_ps(_mm256_set1_ps(scale_v), sum, acc_lo[nn]);
+                }
+                b += sizeof(float) + typename Q4Type::BlkLen;
+            }
+
+            for (int64_t nn = 0; nn < nblk; nn++) {
+                sum_ptr[nn] = mm256_reduce_add_ps(acc_lo[nn]);
+                sum_ptr[nn] += Bias == nullptr ? 0.0f : bias_ptr[nn];
+            }
+        }
+
+        // Prepare pointers for the next row
+        C += ldc;
+        QuantA += lda;
+        rows--;
+    }
+    return CountM;
+}
+
+template<typename Q4Type, typename KERNEL>
+MLAS_FORCEINLINE
+size_t
+BlkQ8GemmKernel(
+    const int8_t* QuantA,
+    const int8_t* Q8B,
+    float* C,
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    size_t lda,
+    size_t ldc,
+    const float* Bias
+    );
+
+template<>
+MLAS_FORCEINLINE
+size_t
+BlkQ8GemmKernel<MLAS_Q4TYPE_BLK0, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    const int8_t* QuantA,
+    const int8_t* Q8B,
+    float* C,
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    size_t lda,
+    size_t ldc,
+    const float* Bias
+)
+{
+    return BlkQ8GemmKernelAvx512Vnni<MLAS_Q4TYPE_BLK0>(QuantA, Q8B, C, CountM, CountN, CountK, lda,
+                                                       ldc, Bias);
+}
+
+template<>
+MLAS_FORCEINLINE
+size_t
+BlkQ8GemmKernel<MLAS_Q4TYPE_BLK1, MLAS_FP_Q4_GEMM_KERNEL_DEFAULT>(
+    const int8_t* QuantA,
+    const int8_t* Q8B,
+    float* C,
+    size_t CountM,
+    size_t CountN,
+    size_t CountK,
+    size_t lda,
+    size_t ldc,
+    const float* Bias
+)
+{
+    return BlkQ8GemmKernelAvx512Vnni<MLAS_Q4TYPE_BLK1>(QuantA, Q8B, C, CountM, CountN, CountK, lda,
+                                                       ldc, Bias);
+}
+
 
 template <typename Q4TYPE, typename KERNEL>
 void MLASCALL
@@ -842,13 +1361,17 @@ MlasQ8Q4GemmOperation(
     float* C = DataParams->C + RangeStartM * ldc + RangeStartN;
     const float* Bias = DataParams->Bias;
 
+    size_t bufsize = k_blks * (typename Q4TYPE::BlkLen) * 64 * sizeof(float);
+    MlasThreadedBufAlloc(bufsize);
+    auto* dequant_b = reinterpret_cast<int8_t*>(ThreadedBufHolder.get());
+
     //
     // Step through each slice of matrix B along the N dimension.
     //
 
     size_t CountN;
     for (size_t n = 0; n < RangeCountN; n += CountN) {
-        CountN = std::min(RangeCountN - n, (size_t)128);
+        CountN = std::min(RangeCountN - n, (size_t)64);
 
         //
         // Step through each slice of matrix A along the M dimension.
@@ -858,10 +1381,13 @@ MlasQ8Q4GemmOperation(
         float* c_blk = C + n;
         const int8_t* a_row = A;
 
+        MlasQ8Q4DequantB<Q4TYPE, KERNEL>(dequant_b, b_col, CountN, K, ldb);
         size_t RowsRemaining = RangeCountM;
         while (RowsRemaining > 0) {
-            auto RowsHandled = MlasQ8Q4GemmKernel<Q4TYPE, KERNEL>(
-                a_row, b_col, c_blk, RowsRemaining, CountN, K, lda, ldb, ldc, bias);
+            auto RowsHandled = BlkQ8GemmKernel<Q4TYPE, KERNEL>(a_row, dequant_b, c_blk, RowsRemaining,
+                                                               CountN, K, lda, ldc, bias);
+            //MlasQ8Q4GemmKernel<Q4TYPE, KERNEL>(
+            //    a_row, b_col, c_blk, RowsRemaining, CountN, K, lda, ldb, ldc, bias);
 
             if (DataParams->OutputProcessor != nullptr) {
                 DataParams->OutputProcessor->Process(
@@ -935,7 +1461,7 @@ MlasQ4GemmBatchDriver(
         ThreadsPerGemm = 1;
     }
 
-    const size_t StrideM = 4;  // dispatch->StrideM;
+    const size_t StrideM = 1024;  // dispatch->StrideM;
 
     size_t nc = N;
     if (ThreadsPerGemm > 1) {
