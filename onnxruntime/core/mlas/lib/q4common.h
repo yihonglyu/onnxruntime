@@ -191,19 +191,3 @@ MlasQ4BlkData<MLAS_Q4TYPE_BLK2>(const uint8_t* BlkPtr)
 {
     return BlkPtr + sizeof(float);
 }
-
-//
-// Quantization and Packing
-//
-// Since block quantization is used for compress large language model weights,
-// it is usually used as the right hand side in matrix multiplications. So
-// we can just perform quantize and packing together to help accelerate
-// matrix multiplication.
-//
-// We take a tiles of 32 row and 4 column, transpose it, and quantize it
-// into 4 blocks. So numbers in quantized block are from the same column.
-// This is different from other int4 block quantization, where the numbers
-// in a block are from the same row.
-//
-
-constexpr size_t MLAS_Q4_N_STRIDE = 4;
