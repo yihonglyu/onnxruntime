@@ -20,6 +20,7 @@ Abstract:
 
 #include "mlas_q4.h"
 
+#include <cstring>
 #include <math.h>
 #include <algorithm>
 
